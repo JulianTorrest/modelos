@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
 import io
-import google.generativeai as genai # Importa la librería de Gemini
+import google.generativeai as genai
 
 # --- Configuración de la Página de Streamlit ---
 st.set_page_config(
@@ -28,7 +28,7 @@ try:
 except Exception as e:
     st.error(f"Error al configurar la API de Gemini: {e}")
     st.warning("La funcionalidad de Gemini AI podría no estar disponible.")
-    model = None # Asegurarse de que el modelo sea None si hay un error de configuración
+    model = None
 
 # --- URL del archivo CSV en GitHub ---
 url = "https://raw.githubusercontent.com/JulianTorrest/modelos/refs/heads/main/Baloto.csv"
@@ -38,7 +38,7 @@ url = "https://raw.githubusercontent.com/JulianTorrest/modelos/refs/heads/main/B
 def load_data(data_url):
     """
     Carga el archivo CSV desde la URL, convierte la columna de fecha
-    y calcula la suma de las balotas.
+    y extrae el año, mes y día.
     Utiliza caché para evitar recargas innecesarias.
     """
     try:
@@ -49,8 +49,7 @@ def load_data(data_url):
         df['Año'] = df['Fecha'].dt.year
         df['Mes'] = df['Fecha'].dt.month
         df['Dia'] = df['Fecha'].dt.day
-        # Calcular la suma de balotas principales
-        df['SumaBalotas'] = df[['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5']].sum(axis=1)
+        # No se calcula SumaBalotas ya que el análisis ha cambiado
         return df
     except Exception as e:
         st.error(f"Error al cargar el archivo desde {data_url}: {e}")
@@ -149,26 +148,40 @@ if not df.empty:
         ax4.set_title('Matriz de Correlación entre Balotas')
         st.pyplot(fig4)
 
-        # --- Sección 5: Análisis Temporal de la Suma de Balotas ---
-        st.subheader("⏳ Tendencia de la Suma de Balotas a lo largo del Tiempo")
-        st.write("Esta gráfica muestra cómo ha evolucionado la suma de las cinco balotas principales en cada sorteo a lo largo de los años.")
+        # --- Sección 5: Tendencia del Promedio de Cada Balota por Año ---
+        st.subheader("⏳ Tendencia Anual del Promedio de Cada Balota")
+        st.write("Esta gráfica muestra cómo ha variado el **promedio de los números** para cada balota (Balota 1 a Balota 5) y la SuperBalota a lo largo de los años. Esto puede indicar si los números tendieron a ser más altos o bajos en ciertos años para cada posición.")
 
-        fig5, ax5 = plt.subplots(figsize=(12, 6))
-        sns.lineplot(x='Fecha', y='SumaBalotas', data=df, ax=ax5, color='darkgreen')
-        ax5.set_title('Suma de Balotas a lo largo del Tiempo')
-        ax5.set_xlabel('Fecha del Sorteo')
-        ax5.set_ylabel('Suma de las Balotas')
+        # Calcular el promedio de cada balota por año
+        df_avg_by_year = df.groupby('Año')[['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']].mean().reset_index()
+
+        fig5, ax5 = plt.subplots(figsize=(14, 7))
+        # Melt el dataframe para usar Seaborn.lineplot con múltiples líneas
+        df_avg_by_year_melted = df_avg_by_year.melt('Año', var_name='Balota', value_name='Promedio')
+        sns.lineplot(x='Año', y='Promedio', hue='Balota', data=df_avg_by_year_melted, marker='o', ax=ax5)
+        ax5.set_title('Promedio Anual de los Números para Cada Balota')
+        ax5.set_xlabel('Año')
+        ax5.set_ylabel('Promedio del Número')
+        ax5.grid(True, linestyle='--', alpha=0.7)
         st.pyplot(fig5)
 
-        # --- Sección 6: Suma de Balotas por Año ---
-        st.subheader("📅 Distribución de la Suma de Balotas por Año")
-        st.write("Los diagramas de caja muestran la distribución de la suma de las balotas para cada año, incluyendo medianas, cuartiles y valores atípicos.")
+        # --- Sección 6: Distribución de Números por Balota y Año (Boxplots) ---
+        st.subheader("📅 Distribución Anual de Números por Balota")
+        st.write("Estos diagramas de caja muestran la distribución de los números para cada balota (Balota 1 a Balota 5) y la SuperBalota, agrupados por año. Puedes observar la mediana, los cuartiles y los valores atípicos.")
 
-        fig6, ax6 = plt.subplots(figsize=(12, 6))
-        sns.boxplot(x='Año', y='SumaBalotas', data=df, ax=ax6, palette='Pastel1')
-        ax6.set_title('Suma de Balotas por Año')
-        ax6.set_xlabel('Año del Sorteo')
-        ax6.set_ylabel('Suma de las Balotas')
+        # Crear subplots para cada balota + SuperBalota
+        fig6, axes6 = plt.subplots(2, 3, figsize=(18, 12))
+        axes6 = axes6.flatten()
+
+        balota_cols = ['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']
+        for i, col in enumerate(balota_cols):
+            sns.boxplot(x='Año', y=col, data=df, ax=axes6[i], palette='Pastel1')
+            axes6[i].set_title(f'Distribución Anual de {col}')
+            axes6[i].set_xlabel('Año')
+            axes6[i].set_ylabel('Número')
+            axes6[i].tick_params(axis='x', rotation=45) # Rotar etiquetas para años si son muchos
+
+        plt.tight_layout()
         st.pyplot(fig6)
 
     with tab2:
@@ -213,7 +226,7 @@ if not df.empty:
         * Visualización de distribuciones de frecuencia de balotas individuales y SuperBalota.
         * Identificación de las balotas más frecuentes.
         * Análisis de correlación entre las posiciones de las balotas.
-        * Tendencias de la suma de balotas a lo largo del tiempo.
+        * **Nuevas tendencias:** Análisis del promedio y la distribución de números para *cada balota individualmente* a lo largo del tiempo y por año.
         * **Integración con Google Gemini AI** para explorar insights adicionales y "predicciones" (puramente con fines ilustrativos y de entretenimiento, ya que las loterías son aleatorias).
 
         **Desarrollado por:** Julian Torres (con asistencia de un modelo de lenguaje de Google).
