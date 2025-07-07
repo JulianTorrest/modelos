@@ -4,6 +4,7 @@ import seaborn as sns
 import streamlit as st
 import io
 import google.generativeai as genai
+import numpy as np # Importar numpy para opciones de muestreo
 
 # --- Configuración de la Página de Streamlit ---
 st.set_page_config(
@@ -52,12 +53,120 @@ def load_data(data_url):
 # --- Cargar los datos ---
 df = load_data(url)
 
+# --- Funciones de Pronóstico y Simulación ---
+
+def generate_montecarlo_draw(df, num_simulations=10000):
+    """
+    Genera combinaciones de baloto usando Montecarlo,
+    respetando el orden y las distribuciones históricas de cada balota.
+    """
+    balota_cols = [f'Balota {i}' for i in range(1, 6)]
+    simulated_draws = []
+
+    for _ in range(num_simulations):
+        current_draw = []
+        prev_num = 0 # Para asegurar el orden ascendente
+
+        for i in range(1, 6):
+            col_name = f'Balota {i}'
+            
+            # Filtrar candidatos: deben ser mayores que el número anterior
+            # y dejar espacio para las balotas restantes (max_balota - (5 - i + 1))
+            min_allowed = prev_num + 1
+            max_allowed = 43 - (5 - i) # Asegurarse de que queden números suficientes para las siguientes balotas
+            
+            candidates = df[col_name][(df[col_name] >= min_allowed) & (df[col_name] <= max_allowed)].unique()
+            
+            if len(candidates) == 0:
+                # Si no hay candidatos válidos en el rango, buscar en el rango general
+                candidates = np.arange(min_allowed, max_allowed + 1)
+                if len(candidates) == 0:
+                    # En un caso muy extremo, si no hay candidatos posibles, romper y reintentar
+                    current_draw = []
+                    break
+
+            # Usar la distribución de frecuencia de esa balota específica
+            frequencies = df[col_name].value_counts(normalize=True).sort_index()
+            
+            # Muestrear de los candidatos, ponderando por su frecuencia histórica
+            # Se usa .get(n, 0.0001) para asignar una pequeña probabilidad a números no vistos.
+            weights = [frequencies.get(n, 0.0001) for n in candidates]
+            weights_sum = sum(weights)
+            if weights_sum == 0: # Evitar división por cero si todos los pesos son 0
+                weights = [1/len(candidates)] * len(candidates) # Distribuir uniformemente
+            else:
+                weights = [w / weights_sum for w in weights] # Normalizar pesos
+
+            chosen_num = np.random.choice(candidates, p=weights)
+            current_draw.append(chosen_num)
+            prev_num = chosen_num
+        
+        # Si se generaron las 5 balotas ordenadas correctamente
+        if len(current_draw) == 5:
+            # Generar SuperBalota de forma independiente
+            superbalota_frequencies = df['SuperBalota'].value_counts(normalize=True).sort_index()
+            sb_candidates = np.arange(1, 17)
+            sb_weights = [superbalota_frequencies.get(n, 0.0001) for n in sb_candidates]
+            sb_weights_sum = sum(sb_weights)
+            if sb_weights_sum == 0:
+                sb_chosen = np.random.choice(sb_candidates)
+            else:
+                sb_weights = [w / sb_weights_sum for w in sb_weights]
+                sb_chosen = np.random.choice(sb_candidates, p=sb_weights)
+            
+            simulated_draws.append((tuple(current_draw), sb_chosen))
+
+    if not simulated_draws:
+        return None, "No se pudieron generar sorteos simulados que cumplan las reglas. Intente aumentar el número de simulaciones."
+
+    # Contar las combinaciones más frecuentes
+    draw_counts = pd.Series(simulated_draws).value_counts().head(5) # Top 5 combinaciones más frecuentes
+    return draw_counts, None
+
+
+def get_hot_numbers_recommendation(df):
+    """
+    Genera una recomendación de balotas basadas en los números más frecuentes
+    para cada posición, respetando el orden.
+    """
+    recommended_balotas = []
+    
+    prev_num = 0
+    for i in range(1, 6):
+        col_name = f'Balota {i}'
+        
+        # Obtener los números más frecuentes para esta balota
+        # que sean mayores que el número anterior
+        # y que dejen espacio para las balotas restantes
+        min_allowed = prev_num + 1
+        max_allowed = 43 - (5 - i) 
+        
+        # Filtrar solo los números posibles y luego ver su frecuencia
+        possible_numbers = df[col_name][(df[col_name] >= min_allowed) & (df[col_name] <= max_allowed)]
+        
+        if possible_numbers.empty:
+            # Si no hay ningún número histórico que cumpla el criterio, tomar el siguiente número válido
+            chosen_num = min_allowed
+        else:
+            # Tomar el número más frecuente que cumpla el criterio
+            # Si hay empate, toma el menor de los más frecuentes
+            chosen_num = possible_numbers.value_counts().sort_index(ascending=True).idxmax()
+
+        recommended_balotas.append(chosen_num)
+        prev_num = chosen_num
+
+    # SuperBalota: el número más frecuente
+    hot_superbalota = df['SuperBalota'].value_counts().idxmax()
+    
+    return recommended_balotas, hot_superbalota
+
+
 # --- Verificar si los datos se cargaron correctamente ---
 if not df.empty:
     st.success("¡Datos de Baloto cargados exitosamente! Fecha del último sorteo registrado: " + df['Fecha'].max().strftime('%d/%m/%Y'))
 
     # --- Pestañas para organizar el contenido ---
-    tab1, tab2, tab3 = st.tabs(["📊 Análisis Exploratorio", "🤖 Predicción/Insights con IA", "ℹ️ Acerca de"])
+    tab1, tab2, tab3 = st.tabs(["📊 Análisis Exploratorio", "🤖 Pronósticos y Simulación", "ℹ️ Acerca de"])
 
     with tab1:
         st.header("Análisis Exploratorio de Datos Históricos")
@@ -86,95 +195,31 @@ if not df.empty:
             horizontal=True
         )
 
-        # Preparar los datos para el mapa de calor
-        # Crear un DataFrame para las balotas regulares (1-5)
         balotas_reg_cols = [f'Balota {i}' for i in range(1, 6)]
         
-        # DataFrame para conteo
         if metric_selection == 'Conteo':
-            # Pivotear los datos para obtener el conteo de cada número por balota
-            # Crear una serie con todos los números de las balotas principales
             df_melted_balotas = df[balotas_reg_cols].melt(var_name='Balota', value_name='Numero')
-            # Contar la frecuencia de cada número por balota
             heatmap_data_regular = pd.crosstab(df_melted_balotas['Numero'], df_melted_balotas['Balota'])
-            # Asegurarse de que todas las balotas estén en el orden correcto
             heatmap_data_regular = heatmap_data_regular.reindex(columns=balotas_reg_cols)
-            # Rellenar NaN con 0 para números que no aparecieron en una balota específica
             heatmap_data_regular = heatmap_data_regular.fillna(0)
             
-            # Para la SuperBalota, creamos una serie independiente y la unimos
             superbalota_counts = df['SuperBalota'].value_counts().sort_index()
-            # Crear un Series con índice hasta 16, rellenar 0 si no hay
             superbalota_full_range = pd.Series(0, index=range(1, 17))
             superbalota_full_range.update(superbalota_counts)
             
-            # Combina ambos dataframes, asegurando un rango completo para números
             max_num_regular = 43
             all_numbers = pd.RangeIndex(start=1, stop=max_num_regular + 1)
             
-            # Reindexar para asegurar que el rango de 1 a 43 esté presente para todas las balotas regulares
             heatmap_data_regular = heatmap_data_regular.reindex(all_numbers, fill_value=0)
 
-            # Crear el DataFrame final del mapa de calor
             heatmap_final = heatmap_data_regular.copy()
-            # Añadir la SuperBalota. Solo hasta el 16, el resto será NaN
-            heatmap_final['SuperBalota'] = superbalota_full_range.reindex(all_numbers, fill_value=pd.NA) # Usar pd.NA para que el heatmap lo muestre en blanco/gris
-
-        # DataFrame para promedio o mediana
-        else:
-            # Calcular la métrica elegida para cada número en cada balota
-            # Esto es más complejo ya que 'numero' no es una columna fija.
-            # Necesitamos transponer para que los números sean filas y las balotas columnas.
-
-            data_for_heatmap = pd.DataFrame()
-            all_numbers_seen = set()
-
-            for col in balotas_reg_cols + ['SuperBalota']:
-                # Calcular la métrica para cada número que aparece en esa balota
-                if metric_selection == 'Promedio':
-                    # No es el promedio del número en sí, sino el promedio de los sorteos
-                    # Esto no tiene sentido para este tipo de visualización si queremos número vs. balota
-                    # La métrica de 'promedio' o 'mediana' de un número que es el mismo es el mismo número.
-                    # Esto solo tiene sentido si hablamos de promedio de balotas por sorteo, que ya se hizo.
-                    # Para 'Número vs Balota', 'Conteo' es la métrica principal.
-
-                    # Para mantener la funcionalidad solicitada pero adaptarla:
-                    # Contar la frecuencia es la métrica más significativa para "cuántas veces aparece un número X en Balota Y"
-                    # Promedio/Mediana de "número" no tiene sentido para esta vista consolidada (num vs balota)
-                    # A menos que se refiera a la mediana/promedio de la *posición* de un número, que es aún más complejo.
-
-                    # Si el usuario insiste en "promedio/mediana" para esta vista:
-                    # Podríamos interpretar como: ¿Cuál es el promedio/mediana del número en esta posición? (esto ya se hizo por año)
-                    # O ¿Cuál es la probabilidad de que este número aparezca en esta posición? (se deriva del conteo)
-
-                    st.warning(f"La métrica '{metric_selection}' para un mapa de calor 'Número vs Balota' consolidado (no por tiempo) no tiene una interpretación directa como el 'Conteo'. Se recomienda 'Conteo' para esta vista.")
-                    st.stop() # Detiene la ejecución si el usuario insiste en una métrica sin sentido para el mapa de calor actual
-                    
-            # Si llegamos aquí, es porque la métrica no es "Conteo" y se detuvo la ejecución o se debe reevaluar.
-            # Para este mapa de calor (Número de balota vs Balota [posición]), solo el conteo tiene sentido.
-            # Los promedios o medianas se usan para series de tiempo o distribuciones.
-            # El promedio de '15' es '15'. La mediana de '15, 15, 16' es '15'.
-
-            # Para no bloquear el flujo, si no es conteo, simplemente crearemos un dummy para que el Heatmap no falle
-            # Esto debería ser un caso de uso que se aclara con el usuario.
-            st.info("Para un 'Mapa de Calor Consolidado por Balota' (Número vs Posición), la métrica de 'Conteo' es la más significativa. El 'Promedio' o 'Mediana' de los números en sí mismos no tienen una variación útil en esta vista. Los gráficos de tendencias por año ya muestran promedios y medianas a lo largo del tiempo.")
-            heatmap_final = pd.DataFrame() # DataFrame vacío para evitar error, el usuario debe elegir Conteo.
-
-
-        if not heatmap_final.empty:
-            max_num_all = 43 # Balotas regulares hasta 43
-            max_num_superbalota = 16 # SuperBalota hasta 16
-
-            # Ajustar los ticks para Balota 1-5 (1-43)
-            # Para la SuperBalota, los números solo van hasta el 16.
-            # Haremos un heatmap que combine, con un rango completo de 1 a 43,
-            # pero los valores para SuperBalota > 16 serán N/A.
+            heatmap_final['SuperBalota'] = superbalota_full_range.reindex(all_numbers, fill_value=pd.NA)
 
             fig7, ax7 = plt.subplots(figsize=(12, 10))
             sns.heatmap(
                 heatmap_final,
                 annot=True,
-                fmt=".0f" if metric_selection == 'Conteo' else ".2f", # Formato de enteros para conteo
+                fmt=".0f", # Formato de enteros para conteo
                 cmap='viridis',
                 linewidths=.5,
                 linecolor='black',
@@ -185,8 +230,8 @@ if not df.empty:
             ax7.set_ylabel('Número de Balota')
             st.pyplot(fig7)
         else:
-            st.warning("No se pudo generar el mapa de calor con la métrica seleccionada.")
-
+            st.info("Para un 'Mapa de Calor Consolidado por Balota' (Número vs Posición), la métrica de 'Conteo' es la más significativa. El 'Promedio' o 'Mediana' de los números en sí mismos no tienen una variación útil en esta vista. Los gráficos de tendencias por año ya muestran promedios y medianas a lo largo del tiempo. Por favor, selecciona 'Conteo' para ver el mapa de calor.")
+            
 
         # --- Sección 2: Distribución de Frecuencia de las Balotas (EXISTENTE) ---
         st.subheader("📈 Distribución de Frecuencia de las Balotas")
@@ -282,14 +327,14 @@ if not df.empty:
         plt.tight_layout()
         st.pyplot(fig6)
 
-    with tab2:
-        st.header("🤖 Interacción con Gemini AI")
-        st.write("Aquí puedes usar la inteligencia artificial de Google Gemini para obtener insights, predicciones o análisis adicionales basados en los datos del Baloto.")
+    with tab2: # Pestaña renombrada a "Pronósticos y Simulación"
+        st.header("🤖 Herramientas de Pronóstico y Simulación")
+        st.write("Aquí puedes explorar diferentes enfoques para generar posibles combinaciones de Baloto, incluyendo simulaciones y recomendaciones basadas en datos históricos. **Recuerda:** Los sorteos de lotería son aleatorios y estas herramientas son para fines de entretenimiento y análisis, no garantizan resultados.")
 
         if model:
-            st.subheader("Generar una 'predicción' o insight")
+            st.subheader("1. Pregunta a Gemini AI")
             st.markdown("""
-            **Descargo de responsabilidad:** La IA de Gemini puede generar texto predictivo basado en patrones, pero **no puede predecir números de lotería reales**. Los sorteos de lotería son eventos de probabilidad puramente aleatorios.
+            Usa la inteligencia artificial de Google Gemini para obtener insights o sugerencias de números. Gemini intentará seguir tus instrucciones de orden y rango.
             """)
 
             latest_results = df.sort_values(by='Fecha', ascending=False).head(5)
@@ -316,6 +361,43 @@ if not df.empty:
                         st.info("Esto puede deberse a un límite de cuota, un problema de red, o un problema con el prompt.")
         else:
             st.warning("La funcionalidad de Gemini AI no está disponible debido a un error de configuración de la API Key.")
+        
+        st.markdown("---")
+
+        st.subheader("2. Simulación de Montecarlo")
+        st.write("Genera sorteos hipotéticos basados en las probabilidades históricas de aparición de cada número, respetando el orden. Esto muestra las combinaciones que *podrían* ser más probables si el pasado influyera en el futuro.")
+        
+        num_sims = st.slider("Número de simulaciones (Montecarlo):", min_value=1000, max_value=100000, value=20000, step=1000)
+
+        if st.button("Ejecutar Simulación Montecarlo"):
+            if not df.empty:
+                with st.spinner(f"Ejecutando {num_sims} simulaciones de Montecarlo..."):
+                    most_frequent_sims, error_msg = generate_montecarlo_draw(df, num_sims)
+                    if most_frequent_sims is not None:
+                        st.markdown("##### Top 5 Combinaciones Más Frecuentes en la Simulación:")
+                        for (balotas_tuple, superbalota_num), count in most_frequent_sims.items():
+                            st.write(f"- Balotas: {list(balotas_tuple)}, SuperBalota: {superbalota_num} (Apareció {count} veces)")
+                        st.info("Estas combinaciones son las que se generaron más a menudo en el conjunto de simulaciones, respetando las distribuciones históricas y el orden.")
+                    else:
+                        st.error(error_msg)
+            else:
+                st.error("No se pueden ejecutar simulaciones sin datos cargados.")
+        
+        st.markdown("---")
+
+        st.subheader("3. Recomendación de Números 'Calientes'")
+        st.write("Obtén una combinación de balotas seleccionando los números más frecuentes para cada posición de balota, asegurando que se cumpla el orden ascendente.")
+
+        if st.button("Generar Números 'Calientes'"):
+            if not df.empty:
+                recommended_balotas, recommended_superbalota = get_hot_numbers_recommendation(df)
+                st.markdown("##### Tu Combinación 'Caliente' Sugerida:")
+                st.write(f"**Balotas:** {recommended_balotas}")
+                st.write(f"**SuperBalota:** {recommended_superbalota}")
+                st.info("Esta combinación se construye eligiendo el número más frecuente para cada posición que cumple la condición de ser mayor que el número anterior.")
+            else:
+                st.error("No se pueden generar recomendaciones sin datos cargados.")
+
 
     with tab3:
         st.header("ℹ️ Acerca de esta Aplicación")
@@ -327,9 +409,12 @@ if not df.empty:
         * Visualización de distribuciones de frecuencia de balotas individuales y SuperBalota.
         * Identificación de las balotas más frecuentes.
         * Análisis de correlación entre las posiciones de las balotas.
-        * **Nuevas tendencias:** Análisis del promedio y la distribución de números para *cada balota individualmente* a lo largo del tiempo y por año.
-        * **Nuevo Mapa de Calor Consolidado** para visualizar el conteo, promedio o mediana de los números por balota.
-        * **Integración con Google Gemini AI** para explorar insights adicionales y "predicciones" (puramente con fines ilustrativos y de entretenimiento, ya que las loterías son aleatorias).
+        * Tendencias del promedio y la distribución de números para *cada balota individualmente* a lo largo del tiempo y por año.
+        * Mapa de Calor Consolidado para visualizar el conteo de números por balota.
+        * **Nuevas herramientas de Pronóstico y Simulación:**
+            * **Integración con Google Gemini AI** para explorar insights adicionales y sugerencias de números.
+            * **Simulación de Montecarlo** para generar combinaciones hipotéticas basadas en probabilidades históricas.
+            * **Recomendación de Números 'Calientes'** basada en la frecuencia de aparición por posición.
 
         **Desarrollado por:** Julian Torres (con asistencia de un modelo de lenguaje de Google).
         """)
