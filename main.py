@@ -20,7 +20,7 @@ st.write("Bienvenido al panel interactivo de análisis de los resultados histór
 gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
 
 try:
-    genai.configure(api_api_key=gemini_api_key)
+    genai.configure(api_key=gemini_api_key) 
     model = genai.GenerativeModel('gemini-1.5-flash') # Usando gemini-1.5-flash para mejor disponibilidad
     st.success("API de Gemini configurada exitosamente con 'gemini-1.5-flash'.")
 except Exception as e:
