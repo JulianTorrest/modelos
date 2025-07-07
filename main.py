@@ -16,15 +16,13 @@ st.title("🎰 Análisis Exploratorio de Datos y Predicción de Baloto con Gemin
 st.write("Bienvenido al panel interactivo de análisis de los resultados históricos del Baloto colombiano. Explora tendencias pasadas y experimenta con la IA de Gemini para posibles predicciones o insights.")
 
 # --- Configuración de la API Key de Gemini ---
-# ADVERTENCIA: La API Key está hardcodeada directamente en el código.
-# Esto NO es una práctica recomendada para producción debido a riesgos de seguridad.
-# Sin embargo, se hace a petición explícita.
 gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
 
 try:
     genai.configure(api_key=gemini_api_key)
+    # Usando gemini-1.5-flash como modelo, que tiene mejor disponibilidad
     model = genai.GenerativeModel('gemini-1.5-flash')
-    st.success("API de Gemini configurada exitosamente (API Key incrustada en el código).")
+    st.success("API de Gemini configurada exitosamente con 'gemini-1.5-flash'.")
 except Exception as e:
     st.error(f"Error al configurar la API de Gemini: {e}")
     st.warning("La funcionalidad de Gemini AI podría no estar disponible.")
@@ -49,11 +47,10 @@ def load_data(data_url):
         df['Año'] = df['Fecha'].dt.year
         df['Mes'] = df['Fecha'].dt.month
         df['Dia'] = df['Fecha'].dt.day
-        # No se calcula SumaBalotas ya que el análisis ha cambiado
         return df
     except Exception as e:
         st.error(f"Error al cargar el archivo desde {data_url}: {e}")
-        return pd.DataFrame() # Retorna un DataFrame vacío en caso de error
+        return pd.DataFrame()
 
 # --- Cargar los datos ---
 df = load_data(url)
@@ -74,7 +71,6 @@ if not df.empty:
 
         st.subheader("📊 Información General y Estadísticas Descriptivas")
         st.write("Resumen de los tipos de datos, valores no nulos y uso de memoria.")
-        # Captura la salida de df.info() en un buffer de texto y la muestra
         buffer = io.StringIO()
         df.info(buf=buffer)
         s = buffer.getvalue()
@@ -87,19 +83,16 @@ if not df.empty:
         st.subheader("📈 Distribución de Frecuencia de las Balotas")
         st.write("Estos histogramas muestran la frecuencia con la que ha aparecido cada número **en su respectiva posición de balota** y en la SuperBalota. Recuerda que las balotas 1 a 5 están ordenadas numéricamente.")
 
-        # Crear una figura con múltiples subplots
         fig1, axes1 = plt.subplots(2, 3, figsize=(18, 12))
-        axes1 = axes1.flatten() # Aplanar el array de ejes para una fácil iteración
+        axes1 = axes1.flatten()
 
-        # Distribución de las 5 Balotas Regulares
         for i in range(1, 6):
             sns.histplot(df[f'Balota {i}'], bins=range(1, 44), kde=True, ax=axes1[i-1], color='skyblue')
             axes1[i-1].set_title(f'Distribución Balota {i} (1-43)')
             axes1[i-1].set_xlabel('Número')
             axes1[i-1].set_ylabel('Frecuencia')
-            axes1[i-1].set_xticks(range(1, 44, 4)) # Mostrar ticks cada 4 números para claridad
+            axes1[i-1].set_xticks(range(1, 44, 4))
 
-        # Distribución de la SuperBalota
         sns.histplot(df['SuperBalota'], bins=range(1, 17), kde=True, ax=axes1[5], color='lightcoral')
         axes1[5].set_title('Distribución SuperBalota (1-16)')
         axes1[5].set_xlabel('Número')
@@ -117,7 +110,6 @@ if not df.empty:
 
         with col1:
             st.markdown("##### Top 10 Balotas Regulares (Global)")
-            # Concatena todas las balotas regulares para contar la frecuencia global
             all_balotas = pd.concat([df['Balota 1'], df['Balota 2'], df['Balota 3'], df['Balota 4'], df['Balota 5']])
             top_balotas = all_balotas.value_counts().head(10)
             fig2, ax2 = plt.subplots(figsize=(10, 6))
@@ -148,15 +140,13 @@ if not df.empty:
         ax4.set_title('Matriz de Correlación entre Balotas')
         st.pyplot(fig4)
 
-        # --- Sección 5: Tendencia del Promedio de Cada Balota por Año ---
+        # --- Sección 5: Tendencia Anual del Promedio de Cada Balota ---
         st.subheader("⏳ Tendencia Anual del Promedio de Cada Balota")
         st.write("Esta gráfica muestra cómo ha variado el **promedio de los números** para cada balota (Balota 1 a Balota 5) y la SuperBalota a lo largo de los años. Esto puede indicar si los números tendieron a ser más altos o bajos en ciertos años para cada posición.")
 
-        # Calcular el promedio de cada balota por año
         df_avg_by_year = df.groupby('Año')[['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']].mean().reset_index()
 
         fig5, ax5 = plt.subplots(figsize=(14, 7))
-        # Melt el dataframe para usar Seaborn.lineplot con múltiples líneas
         df_avg_by_year_melted = df_avg_by_year.melt('Año', var_name='Balota', value_name='Promedio')
         sns.lineplot(x='Año', y='Promedio', hue='Balota', data=df_avg_by_year_melted, marker='o', ax=ax5)
         ax5.set_title('Promedio Anual de los Números para Cada Balota')
@@ -165,11 +155,10 @@ if not df.empty:
         ax5.grid(True, linestyle='--', alpha=0.7)
         st.pyplot(fig5)
 
-        # --- Sección 6: Distribución de Números por Balota y Año (Boxplots) ---
+        # --- Sección 6: Distribución Anual de Números por Balota (Boxplots) ---
         st.subheader("📅 Distribución Anual de Números por Balota")
         st.write("Estos diagramas de caja muestran la distribución de los números para cada balota (Balota 1 a Balota 5) y la SuperBalota, agrupados por año. Puedes observar la mediana, los cuartiles y los valores atípicos.")
 
-        # Crear subplots para cada balota + SuperBalota
         fig6, axes6 = plt.subplots(2, 3, figsize=(18, 12))
         axes6 = axes6.flatten()
 
@@ -179,7 +168,7 @@ if not df.empty:
             axes6[i].set_title(f'Distribución Anual de {col}')
             axes6[i].set_xlabel('Año')
             axes6[i].set_ylabel('Número')
-            axes6[i].tick_params(axis='x', rotation=45) # Rotar etiquetas para años si son muchos
+            axes6[i].tick_params(axis='x', rotation=45)
 
         plt.tight_layout()
         st.pyplot(fig6)
@@ -198,11 +187,17 @@ if not df.empty:
             latest_results = df.sort_values(by='Fecha', ascending=False).head(5)
             latest_results_str = latest_results.to_string(index=False)
 
+            # --- EL PROMPT CLAVE QUE ME PEDISTE ---
             prompt = st.text_area(
                 "Ingresa tu pregunta o solicitud para Gemini sobre los datos del Baloto:",
                 f"Basado en los siguientes últimos resultados del Baloto:\n\n{latest_results_str}\n\n"
-                "¿Podrías identificar alguna tendencia interesante o sugerir un posible conjunto de números (puramente por curiosidad y sin garantía de ser ganadores) y justificar tu razonamiento? Ten en cuenta que las balotas 1 a 5 están ordenadas numéricamente y la SuperBalota es independiente. Considera los rangos de balotas (1-43) y SuperBalota (1-16)."
+                "Estoy buscando un posible conjunto de 5 números de balota y 1 SuperBalota. "
+                "Las 5 balotas deben estar en el rango de 1 a 43 y **estrictamente ordenadas de forma ascendente (Balota 1 < Balota 2 < Balota 3 < Balota 4 < Balota 5)**. "
+                "La SuperBalota debe estar en el rango de 1 a 16 y es independiente de las otras 5. "
+                "Por favor, sugiere un conjunto de números y justifica brevemente tu razonamiento, quizás basándote en tendencias o números frecuentes de los datos históricos. "
+                "Formato de salida deseado: Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]."
             )
+            # --- FIN DEL PROMPT CLAVE ---
 
             if st.button("Generar con Gemini"):
                 with st.spinner("Generando respuesta..."):
