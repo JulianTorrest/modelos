@@ -20,7 +20,7 @@ st.write("Bienvenido al panel interactivo de análisis de los resultados histór
 # Para Streamlit Cloud, usa los secretos de la aplicación.
 # Por ahora, la cargaremos del secrets.toml
 # Crea un archivo .streamlit/secrets.toml con:
-# GOOGLE_API_KEY = "TU_API_KEY_AQUI"
+GOOGLE_API_KEY = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk"
 try:
     gemini_api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=gemini_api_key)
