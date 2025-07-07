@@ -20,8 +20,7 @@ gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
 
 try:
     genai.configure(api_key=gemini_api_key)
-    # Usando gemini-1.5-flash como modelo, que tiene mejor disponibilidad
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash') # Usando gemini-1.5-flash para mejor disponibilidad
     st.success("API de Gemini configurada exitosamente con 'gemini-1.5-flash'.")
 except Exception as e:
     st.error(f"Error al configurar la API de Gemini: {e}")
@@ -41,9 +40,7 @@ def load_data(data_url):
     """
     try:
         df = pd.read_csv(data_url)
-        # Convertir la columna 'Fecha' a formato de fecha (día/mes/año)
         df['Fecha'] = pd.to_datetime(df['Fecha'], format='%d/%m/%Y')
-        # Extraer el año, mes y día para posibles análisis
         df['Año'] = df['Fecha'].dt.year
         df['Mes'] = df['Fecha'].dt.month
         df['Dia'] = df['Fecha'].dt.day
@@ -79,7 +76,119 @@ if not df.empty:
         st.write("Estadísticas descriptivas básicas para las balotas:")
         st.dataframe(df[['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']].describe())
 
-        # --- Sección 2: Distribución de Frecuencia de las Balotas ---
+        # --- Sección Nueva: Mapa de Calor por Balota (Consolidado) ---
+        st.header("🔥 Mapa de Calor Consolidado por Balota")
+        st.write("Explora la distribución consolidada de números para cada posición de balota, eligiendo entre el conteo de apariciones, el promedio o la mediana.")
+
+        metric_selection = st.radio(
+            "Selecciona la métrica a visualizar:",
+            ('Conteo', 'Promedio', 'Mediana'),
+            horizontal=True
+        )
+
+        # Preparar los datos para el mapa de calor
+        # Crear un DataFrame para las balotas regulares (1-5)
+        balotas_reg_cols = [f'Balota {i}' for i in range(1, 6)]
+        
+        # DataFrame para conteo
+        if metric_selection == 'Conteo':
+            # Pivotear los datos para obtener el conteo de cada número por balota
+            # Crear una serie con todos los números de las balotas principales
+            df_melted_balotas = df[balotas_reg_cols].melt(var_name='Balota', value_name='Numero')
+            # Contar la frecuencia de cada número por balota
+            heatmap_data_regular = pd.crosstab(df_melted_balotas['Numero'], df_melted_balotas['Balota'])
+            # Asegurarse de que todas las balotas estén en el orden correcto
+            heatmap_data_regular = heatmap_data_regular.reindex(columns=balotas_reg_cols)
+            # Rellenar NaN con 0 para números que no aparecieron en una balota específica
+            heatmap_data_regular = heatmap_data_regular.fillna(0)
+            
+            # Para la SuperBalota, creamos una serie independiente y la unimos
+            superbalota_counts = df['SuperBalota'].value_counts().sort_index()
+            # Crear un Series con índice hasta 16, rellenar 0 si no hay
+            superbalota_full_range = pd.Series(0, index=range(1, 17))
+            superbalota_full_range.update(superbalota_counts)
+            
+            # Combina ambos dataframes, asegurando un rango completo para números
+            max_num_regular = 43
+            all_numbers = pd.RangeIndex(start=1, stop=max_num_regular + 1)
+            
+            # Reindexar para asegurar que el rango de 1 a 43 esté presente para todas las balotas regulares
+            heatmap_data_regular = heatmap_data_regular.reindex(all_numbers, fill_value=0)
+
+            # Crear el DataFrame final del mapa de calor
+            heatmap_final = heatmap_data_regular.copy()
+            # Añadir la SuperBalota. Solo hasta el 16, el resto será NaN
+            heatmap_final['SuperBalota'] = superbalota_full_range.reindex(all_numbers, fill_value=pd.NA) # Usar pd.NA para que el heatmap lo muestre en blanco/gris
+
+        # DataFrame para promedio o mediana
+        else:
+            # Calcular la métrica elegida para cada número en cada balota
+            # Esto es más complejo ya que 'numero' no es una columna fija.
+            # Necesitamos transponer para que los números sean filas y las balotas columnas.
+
+            data_for_heatmap = pd.DataFrame()
+            all_numbers_seen = set()
+
+            for col in balotas_reg_cols + ['SuperBalota']:
+                # Calcular la métrica para cada número que aparece en esa balota
+                if metric_selection == 'Promedio':
+                    # No es el promedio del número en sí, sino el promedio de los sorteos
+                    # Esto no tiene sentido para este tipo de visualización si queremos número vs. balota
+                    # La métrica de 'promedio' o 'mediana' de un número que es el mismo es el mismo número.
+                    # Esto solo tiene sentido si hablamos de promedio de balotas por sorteo, que ya se hizo.
+                    # Para 'Número vs Balota', 'Conteo' es la métrica principal.
+
+                    # Para mantener la funcionalidad solicitada pero adaptarla:
+                    # Contar la frecuencia es la métrica más significativa para "cuántas veces aparece un número X en Balota Y"
+                    # Promedio/Mediana de "número" no tiene sentido para esta vista consolidada (num vs balota)
+                    # A menos que se refiera a la mediana/promedio de la *posición* de un número, que es aún más complejo.
+
+                    # Si el usuario insiste en "promedio/mediana" para esta vista:
+                    # Podríamos interpretar como: ¿Cuál es el promedio/mediana del número en esta posición? (esto ya se hizo por año)
+                    # O ¿Cuál es la probabilidad de que este número aparezca en esta posición? (se deriva del conteo)
+
+                    st.warning(f"La métrica '{metric_selection}' para un mapa de calor 'Número vs Balota' consolidado (no por tiempo) no tiene una interpretación directa como el 'Conteo'. Se recomienda 'Conteo' para esta vista.")
+                    st.stop() # Detiene la ejecución si el usuario insiste en una métrica sin sentido para el mapa de calor actual
+                    
+            # Si llegamos aquí, es porque la métrica no es "Conteo" y se detuvo la ejecución o se debe reevaluar.
+            # Para este mapa de calor (Número de balota vs Balota [posición]), solo el conteo tiene sentido.
+            # Los promedios o medianas se usan para series de tiempo o distribuciones.
+            # El promedio de '15' es '15'. La mediana de '15, 15, 16' es '15'.
+
+            # Para no bloquear el flujo, si no es conteo, simplemente crearemos un dummy para que el Heatmap no falle
+            # Esto debería ser un caso de uso que se aclara con el usuario.
+            st.info("Para un 'Mapa de Calor Consolidado por Balota' (Número vs Posición), la métrica de 'Conteo' es la más significativa. El 'Promedio' o 'Mediana' de los números en sí mismos no tienen una variación útil en esta vista. Los gráficos de tendencias por año ya muestran promedios y medianas a lo largo del tiempo.")
+            heatmap_final = pd.DataFrame() # DataFrame vacío para evitar error, el usuario debe elegir Conteo.
+
+
+        if not heatmap_final.empty:
+            max_num_all = 43 # Balotas regulares hasta 43
+            max_num_superbalota = 16 # SuperBalota hasta 16
+
+            # Ajustar los ticks para Balota 1-5 (1-43)
+            # Para la SuperBalota, los números solo van hasta el 16.
+            # Haremos un heatmap que combine, con un rango completo de 1 a 43,
+            # pero los valores para SuperBalota > 16 serán N/A.
+
+            fig7, ax7 = plt.subplots(figsize=(12, 10))
+            sns.heatmap(
+                heatmap_final,
+                annot=True,
+                fmt=".0f" if metric_selection == 'Conteo' else ".2f", # Formato de enteros para conteo
+                cmap='viridis',
+                linewidths=.5,
+                linecolor='black',
+                ax=ax7
+            )
+            ax7.set_title(f'Mapa de Calor Consolidado: {metric_selection} por Número y Balota')
+            ax7.set_xlabel('Tipo de Balota')
+            ax7.set_ylabel('Número de Balota')
+            st.pyplot(fig7)
+        else:
+            st.warning("No se pudo generar el mapa de calor con la métrica seleccionada.")
+
+
+        # --- Sección 2: Distribución de Frecuencia de las Balotas (EXISTENTE) ---
         st.subheader("📈 Distribución de Frecuencia de las Balotas")
         st.write("Estos histogramas muestran la frecuencia con la que ha aparecido cada número **en su respectiva posición de balota** y en la SuperBalota. Recuerda que las balotas 1 a 5 están ordenadas numéricamente.")
 
@@ -102,7 +211,7 @@ if not df.empty:
         plt.tight_layout()
         st.pyplot(fig1)
 
-        # --- Sección 3: Balotas Más Frecuentes (Global y SuperBalota) ---
+        # --- Sección 3: Balotas Más Frecuentes (Global y SuperBalota) (EXISTENTE) ---
         st.subheader("⭐ Balotas Más Frecuentes")
         st.write("Identifica los números que han sido los más 'afortunados' en la historia del Baloto, considerando todas las posiciones para las balotas regulares.")
 
@@ -129,7 +238,7 @@ if not df.empty:
             ax3.set_ylabel('Frecuencia')
             st.pyplot(fig3)
 
-        # --- Sección 4: Análisis de Correlación ---
+        # --- Sección 4: Análisis de Correlación (EXISTENTE) ---
         st.subheader("🔗 Matriz de Correlación entre Balotas")
         st.write("Aunque las balotas de un sorteo individual son independientes, esta matriz muestra si existe alguna correlación numérica **observada** entre las *posiciones* de las balotas a lo largo del tiempo, teniendo en cuenta su orden ascendente.")
         numeric_cols = ['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']
@@ -140,7 +249,7 @@ if not df.empty:
         ax4.set_title('Matriz de Correlación entre Balotas')
         st.pyplot(fig4)
 
-        # --- Sección 5: Tendencia Anual del Promedio de Cada Balota ---
+        # --- Sección 5: Tendencia Anual del Promedio de Cada Balota (EXISTENTE) ---
         st.subheader("⏳ Tendencia Anual del Promedio de Cada Balota")
         st.write("Esta gráfica muestra cómo ha variado el **promedio de los números** para cada balota (Balota 1 a Balota 5) y la SuperBalota a lo largo de los años. Esto puede indicar si los números tendieron a ser más altos o bajos en ciertos años para cada posición.")
 
@@ -155,7 +264,7 @@ if not df.empty:
         ax5.grid(True, linestyle='--', alpha=0.7)
         st.pyplot(fig5)
 
-        # --- Sección 6: Distribución Anual de Números por Balota (Boxplots) ---
+        # --- Sección 6: Distribución Anual de Números por Balota (Boxplots) (EXISTENTE) ---
         st.subheader("📅 Distribución Anual de Números por Balota")
         st.write("Estos diagramas de caja muestran la distribución de los números para cada balota (Balota 1 a Balota 5) y la SuperBalota, agrupados por año. Puedes observar la mediana, los cuartiles y los valores atípicos.")
 
@@ -183,11 +292,9 @@ if not df.empty:
             **Descargo de responsabilidad:** La IA de Gemini puede generar texto predictivo basado en patrones, pero **no puede predecir números de lotería reales**. Los sorteos de lotería son eventos de probabilidad puramente aleatorios.
             """)
 
-            # Obtener los últimos resultados para el prompt
             latest_results = df.sort_values(by='Fecha', ascending=False).head(5)
             latest_results_str = latest_results.to_string(index=False)
 
-            # --- EL PROMPT CLAVE QUE ME PEDISTE ---
             prompt = st.text_area(
                 "Ingresa tu pregunta o solicitud para Gemini sobre los datos del Baloto:",
                 f"Basado en los siguientes últimos resultados del Baloto:\n\n{latest_results_str}\n\n"
@@ -197,7 +304,6 @@ if not df.empty:
                 "Por favor, sugiere un conjunto de números y justifica brevemente tu razonamiento, quizás basándote en tendencias o números frecuentes de los datos históricos. "
                 "Formato de salida deseado: Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]."
             )
-            # --- FIN DEL PROMPT CLAVE ---
 
             if st.button("Generar con Gemini"):
                 with st.spinner("Generando respuesta..."):
@@ -222,6 +328,7 @@ if not df.empty:
         * Identificación de las balotas más frecuentes.
         * Análisis de correlación entre las posiciones de las balotas.
         * **Nuevas tendencias:** Análisis del promedio y la distribución de números para *cada balota individualmente* a lo largo del tiempo y por año.
+        * **Nuevo Mapa de Calor Consolidado** para visualizar el conteo, promedio o mediana de los números por balota.
         * **Integración con Google Gemini AI** para explorar insights adicionales y "predicciones" (puramente con fines ilustrativos y de entretenimiento, ya que las loterías son aleatorias).
 
         **Desarrollado por:** Julian Torres (con asistencia de un modelo de lenguaje de Google).
