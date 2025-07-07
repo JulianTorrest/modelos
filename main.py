@@ -4,7 +4,8 @@ import seaborn as sns
 import streamlit as st
 import io
 import google.generativeai as genai
-import numpy as np # Importar numpy para opciones de muestreo
+import numpy as np
+import re # Para parsing de la respuesta de Gemini
 
 # --- Configuración de la Página de Streamlit ---
 st.set_page_config(
@@ -20,8 +21,8 @@ st.write("Bienvenido al panel interactivo de análisis de los resultados histór
 gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
 
 try:
-    genai.configure(api_key=gemini_api_key) 
-    model = genai.GenerativeModel('gemini-1.5-flash') # Usando gemini-1.5-flash para mejor disponibilidad
+    genai.configure(api_key=gemini_api_key) # CORRECCIÓN: api_key en lugar de api_api_key
+    model = genai.GenerativeModel('gemini-1.5-flash')
     st.success("API de Gemini configurada exitosamente con 'gemini-1.5-flash'.")
 except Exception as e:
     st.error(f"Error al configurar la API de Gemini: {e}")
@@ -53,27 +54,55 @@ def load_data(data_url):
 # --- Cargar los datos ---
 df = load_data(url)
 
-# --- Funciones de Pronóstico y Simulación (sin cambios aquí) ---
-# ... (Mantén las funciones generate_montecarlo_draw y get_hot_numbers_recommendation tal cual) ...
-def generate_montecarlo_draw(df, num_simulations=10000):
+# --- Inicializar session_state para almacenar resultados ---
+if 'all_forecasts' not in st.session_state:
+    st.session_state.all_forecasts = []
+if 'gemini_raw_response' not in st.session_state:
+    st.session_state.gemini_raw_response = ""
+
+# --- NUEVA FUNCIÓN: Calcular Puntaje de Frecuencia Histórica ---
+@st.cache_data
+def calculate_historical_frequency_score(df, balotas_list, superbalota_num):
     """
-    Genera combinaciones de baloto usando Montecarlo,
-    respetando el orden y las distribuciones históricas de cada balota.
+    Calcula un puntaje basado en la suma de las frecuencias históricas
+    de cada número en su respectiva posición de balota.
+    """
+    score = 0
+    # Asegurarse de que las balotas_list tenga 5 elementos
+    if len(balotas_list) != 5:
+        return 0 # O manejar el error de otra forma
+
+    # Frecuencias para balotas regulares (1-5)
+    for i in range(5):
+        col_name = f'Balota {i+1}'
+        # Usar .get(number, 0) para asignar 0 si el número no se encuentra en esa posición
+        score += df[col_name].value_counts().get(balotas_list[i], 0)
+
+    # Frecuencia para SuperBalota
+    score += df['SuperBalota'].value_counts().get(superbalota_num, 0)
+    return score
+
+# --- Funciones de Pronóstico y Simulación Actualizadas ---
+
+def generate_montecarlo_draws(df, num_simulations=10000):
+    """
+    Genera 5 combinaciones de baloto usando Montecarlo,
+    respetando el orden y las distribuciones históricas de cada balota,
+    y calcula su puntaje de frecuencia.
     """
     balota_cols = [f'Balota {i}' for i in range(1, 6)]
-    simulated_draws = []
+    simulated_draws_with_scores = []
 
+    # Generar más simulaciones de las que necesitamos para asegurar 5 únicas y con buen puntaje
+    temp_simulated_draws = []
     for _ in range(num_simulations):
         current_draw = []
-        prev_num = 0 # Para asegurar el orden ascendente
+        prev_num = 0
 
         for i in range(1, 6):
             col_name = f'Balota {i}'
-            
-            # Filtrar candidatos: deben ser mayores que el número anterior
-            # y dejar espacio para las balotas restantes (max_balota - (5 - i + 1))
             min_allowed = prev_num + 1
-            max_allowed = 43 - (5 - i) # Asegurarse de que queden números suficientes para las siguientes balotas
+            max_allowed = 43 - (5 - i)
             
             candidates = df[col_name][(df[col_name] >= min_allowed) & (df[col_name] <= max_allowed)].unique()
             
@@ -84,7 +113,6 @@ def generate_montecarlo_draw(df, num_simulations=10000):
                     break
 
             frequencies = df[col_name].value_counts(normalize=True).sort_index()
-            
             weights = [frequencies.get(n, 0.0001) for n in candidates]
             weights_sum = sum(weights)
             if weights_sum == 0:
@@ -107,28 +135,44 @@ def generate_montecarlo_draw(df, num_simulations=10000):
                 sb_weights = [w / sb_weights_sum for w in sb_weights]
                 sb_chosen = np.random.choice(sb_candidates, p=sb_weights)
             
-            simulated_draws.append((tuple(current_draw), sb_chosen))
+            temp_simulated_draws.append((tuple(current_draw), sb_chosen))
 
-    if not simulated_draws:
-        return None, "No se pudieron generar sorteos simulados que cumplan las reglas. Intente aumentar el número de simulaciones."
+    if not temp_simulated_draws:
+        st.warning("No se pudieron generar sorteos simulados que cumplan las reglas. Intente aumentar el número de simulaciones.")
+        return []
 
-    draw_counts = pd.Series(simulated_draws).value_counts().head(5)
-    return draw_counts, None
-
-
-def get_hot_numbers_recommendation(df):
-    """
-    Genera una recomendación de balotas basadas en los números más frecuentes
-    para cada posición, respetando el orden.
-    """
-    recommended_balotas = []
+    # Contar las combinaciones más frecuentes y tomar las 5 primeras
+    draw_counts = pd.Series(temp_simulated_draws).value_counts()
     
+    # Asegurarse de obtener 5 combinaciones únicas y con puntaje
+    unique_draws = []
+    for (balotas_tuple, superbalota_num) in draw_counts.index:
+        if len(unique_draws) >= 5:
+            break
+        score = calculate_historical_frequency_score(df, list(balotas_tuple), superbalota_num)
+        unique_draws.append({
+            'balotas': list(balotas_tuple),
+            'superbalota': superbalota_num,
+            'score': score,
+            'method': 'Monte Carlo'
+        })
+    return unique_draws
+
+
+def get_hot_numbers_recommendations(df):
+    """
+    Genera 5 recomendaciones de balotas basadas en los números más frecuentes
+    para cada posición, respetando el orden, y calcula su puntaje.
+    """
+    recommendations = []
+    
+    # 1. La combinación más caliente "pura"
+    current_balotas = []
     prev_num = 0
     for i in range(1, 6):
         col_name = f'Balota {i}'
-        
         min_allowed = prev_num + 1
-        max_allowed = 43 - (5 - i) 
+        max_allowed = 43 - (5 - i)
         
         possible_numbers = df[col_name][(df[col_name] >= min_allowed) & (df[col_name] <= max_allowed)]
         
@@ -136,13 +180,160 @@ def get_hot_numbers_recommendation(df):
             chosen_num = min_allowed
         else:
             chosen_num = possible_numbers.value_counts().sort_index(ascending=True).idxmax()
-
-        recommended_balotas.append(chosen_num)
+        current_balotas.append(chosen_num)
         prev_num = chosen_num
-
+    
     hot_superbalota = df['SuperBalota'].value_counts().idxmax()
     
-    return recommended_balotas, hot_superbalota
+    score = calculate_historical_frequency_score(df, current_balotas, hot_superbalota)
+    recommendations.append({
+        'balotas': current_balotas,
+        'superbalota': hot_superbalota,
+        'score': score,
+        'method': 'Números Calientes'
+    })
+
+    # 2-5. Generar 4 variaciones "calientes"
+    # Tomar los top 5 números más frecuentes para cada posición y generar combinaciones aleatorias de ellos
+    top_n = 5 # Considerar los top 5 números más frecuentes por posición
+    
+    # Pre-calcular los números calientes por posición
+    hot_numbers_by_pos = {}
+    for i in range(1, 6):
+        col_name = f'Balota {i}'
+        hot_numbers_by_pos[col_name] = df[col_name].value_counts().head(top_n).index.tolist()
+    
+    hot_superbalota_candidates = df['SuperBalota'].value_counts().head(top_n).index.tolist()
+
+    generated_count = 0
+    max_attempts = 100 # Para evitar bucles infinitos si es difícil encontrar combinaciones válidas
+    
+    while generated_count < 4 and max_attempts > 0:
+        temp_balotas = []
+        prev_num = 0
+        valid_combination = True
+
+        for i in range(1, 6):
+            col_name = f'Balota {i}'
+            candidates_for_pos = [n for n in hot_numbers_by_pos[col_name] if n > prev_num and n <= (43 - (5 - i))]
+            
+            if not candidates_for_pos:
+                # Si no hay candidatos "calientes" que cumplan el orden, intentar con el rango general
+                candidates_for_pos = [n for n in np.arange(prev_num + 1, 43 - (5-i) + 1) if n not in temp_balotas]
+                if not candidates_for_pos:
+                    valid_combination = False
+                    break
+            
+            chosen_num = np.random.choice(candidates_for_pos)
+            temp_balotas.append(chosen_num)
+            prev_num = chosen_num
+        
+        if valid_combination and len(temp_balotas) == 5:
+            temp_superbalota = np.random.choice(hot_superbalota_candidates)
+            
+            # Check for uniqueness
+            is_unique = True
+            for rec in recommendations:
+                if rec['balotas'] == temp_balotas and rec['superbalota'] == temp_superbalota:
+                    is_unique = False
+                    break
+            
+            if is_unique:
+                score = calculate_historical_frequency_score(df, temp_balotas, temp_superbalota)
+                recommendations.append({
+                    'balotas': temp_balotas,
+                    'superbalota': temp_superbalota,
+                    'score': score,
+                    'method': 'Números Calientes'
+                })
+                generated_count += 1
+        max_attempts -= 1
+    
+    return recommendations
+
+
+def get_gemini_recommendations(df, model, latest_results_str, top_balotas_str, top_superbalotas_str):
+    """
+    Obtiene 5 recomendaciones de Gemini AI y calcula su puntaje.
+    """
+    if not model:
+        st.warning("Gemini AI no está disponible para generar recomendaciones.")
+        return []
+
+    gemini_forecasts = []
+    
+    # --- EL PROMPT CLAVE CON LA INFORMACIÓN HISTÓRICA ADICIONAL ---
+    prompt = (
+        f"Basado en los siguientes últimos 5 resultados del Baloto:\n\n{latest_results_str}\n\n"
+        f"**Información Histórica Adicional:**\n"
+        f"- Los números de Balota regular más frecuentes históricamente (en cualquier posición, del 1 al 43) son: {top_balotas_str}.\n"
+        f"- Los números de SuperBalota más frecuentes históricamente (del 1 al 16) son: {top_superbalotas_str}.\n\n"
+        "Por favor, sugiere **5 conjuntos distintos** de 5 números de balota y 1 SuperBalota. "
+        "Para cada conjunto, las 5 balotas deben estar en el rango de 1 a 43 y **estrictamente ordenadas de forma ascendente (Balota 1 < Balota 2 < Balota 3 < Balota 4 < Balota 5)**. "
+        "La SuperBalota debe estar en el rango de 1 a 16 y es independiente de las otras 5. "
+        "Justifica brevemente tu razonamiento para cada conjunto, basándote en los datos proporcionados (últimos resultados y números frecuentes históricos). "
+        "**Formato de salida deseado para cada conjunto (importante para el parsing):**\n"
+        "**Conjunto N:** Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]. Razón: [Tu justificación]\n"
+        "Asegúrate de que cada conjunto sea único y siga el formato exacto."
+    )
+    # --- FIN DEL PROMPT CLAVE ---
+
+    try:
+        response = model.generate_content(prompt)
+        st.session_state.gemini_raw_response = response.text # Guardar la respuesta cruda para depuración
+        
+        # --- Parsing de la respuesta de Gemini para extraer 5 conjuntos ---
+        # Regex para encontrar "Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]"
+        # Asegúrate de que los números estén entre 1 y 43 para balotas y 1 y 16 para superbalota
+        pattern = r"Balotas: \[(\d{1,2}), (\d{1,2}), (\d{1,2}), (\d{1,2}), (\d{1,2})\], SuperBalota: \[(\d{1,2})\]"
+        
+        matches = re.findall(pattern, response.text)
+        
+        parsed_count = 0
+        for match in matches:
+            if parsed_count >= 5: # Solo tomar los primeros 5 que encuentre
+                break
+            try:
+                balotas = [int(n) for n in match[:5]]
+                superbalota = int(match[5])
+
+                # Validar rangos y orden
+                if (1 <= balotas[0] < balotas[1] < balotas[2] < balotas[3] < balotas[4] <= 43 and
+                    1 <= superbalota <= 16):
+                    
+                    score = calculate_historical_frequency_score(df, balotas, superbalota)
+                    gemini_forecasts.append({
+                        'balotas': balotas,
+                        'superbalota': superbalota,
+                        'score': score,
+                        'method': 'Gemini AI'
+                    })
+                    parsed_count += 1
+                else:
+                    st.warning(f"Gemini sugirió una combinación inválida (rango/orden): Balotas: {balotas}, SuperBalota: {superbalota}")
+
+            except ValueError:
+                st.warning(f"No se pudo parsear una combinación de Gemini: {match}")
+        
+        if parsed_count == 0:
+            st.warning("Gemini no pudo generar combinaciones válidas en el formato esperado.")
+            st.info("Respuesta cruda de Gemini (para depuración): " + response.text)
+
+    except Exception as e:
+        st.error(f"Error al comunicarse con la API de Gemini: {e}")
+        st.info("Esto puede deberse a un límite de cuota, un problema de red, o un problema con el prompt.")
+    
+    # Si no se generaron 5, rellenar con vacíos o indicar menos
+    while len(gemini_forecasts) < 5:
+        gemini_forecasts.append({
+            'balotas': [],
+            'superbalota': None,
+            'score': 0,
+            'method': 'Gemini AI (Inválido/No Generado)'
+        })
+
+    return gemini_forecasts
+
 
 # --- Verificar si los datos se cargaron correctamente ---
 if not df.empty:
@@ -308,85 +499,85 @@ if not df.empty:
         st.write("Aquí puedes explorar diferentes enfoques para generar posibles combinaciones de Baloto, incluyendo simulaciones y recomendaciones basadas en datos históricos. **Recuerda:** Los sorteos de lotería son aleatorios y estas herramientas son para fines de entretenimiento y análisis, no garantizan resultados.")
 
         if model:
-            st.subheader("1. Pregunta a Gemini AI")
-            st.markdown("""
-            Usa la inteligencia artificial de Google Gemini para obtener insights o sugerencias de números. Gemini intentará seguir tus instrucciones de orden y rango, **basándose en el resumen histórico proporcionado**.
-            """)
+            num_sims = st.slider("Número de simulaciones para Montecarlo:", min_value=1000, max_value=100000, value=20000, step=1000)
 
-            latest_results = df.sort_values(by='Fecha', ascending=False).head(5)
-            latest_results_str = latest_results.to_string(index=False)
+            if st.button("Generar Todos los Pronósticos"):
+                st.session_state.all_forecasts = [] # Limpiar resultados anteriores
 
-            # --- PREPARACIÓN DE DATOS HISTÓRICOS PARA EL PROMPT ---
-            all_balotas = pd.concat([df['Balota 1'], df['Balota 2'], df['Balota 3'], df['Balota 4'], df['Balota 5']])
-            top_10_balotas_global = all_balotas.value_counts().head(10)
-            top_balotas_str = ", ".join([f"{num} ({freq} veces)" for num, freq in top_10_balotas_global.items()])
+                with st.spinner("Generando pronósticos con Gemini AI..."):
+                    latest_results = df.sort_values(by='Fecha', ascending=False).head(5)
+                    latest_results_str = latest_results.to_string(index=False)
+                    all_balotas_combined = pd.concat([df['Balota 1'], df['Balota 2'], df['Balota 3'], df['Balota 4'], df['Balota 5']])
+                    top_10_balotas_global = all_balotas_combined.value_counts().head(10)
+                    top_balotas_str = ", ".join([f"{num} ({freq} veces)" for num, freq in top_10_balotas_global.items()])
+                    top_10_superbalotas = df['SuperBalota'].value_counts().head(10)
+                    top_superbalotas_str = ", ".join([f"{num} ({freq} veces)" for num, freq in top_10_superbalotas.items()])
 
-            top_10_superbalotas = df['SuperBalota'].value_counts().head(10)
-            top_superbalotas_str = ", ".join([f"{num} ({freq} veces)" for num, freq in top_10_superbalotas.items()])
-            # --- FIN DE PREPARACIÓN DE DATOS ---
+                    gemini_results = get_gemini_recommendations(df, model, latest_results_str, top_balotas_str, top_superbalotas_str)
+                    st.session_state.all_forecasts.extend(gemini_results)
+                    st.success("Pronósticos de Gemini AI generados.")
 
-            # --- EL PROMPT CLAVE CON LA INFORMACIÓN HISTÓRICA ADICIONAL ---
-            prompt = st.text_area(
-                "Ingresa tu pregunta o solicitud para Gemini sobre los datos del Baloto:",
-                f"Basado en los siguientes últimos 5 resultados del Baloto:\n\n{latest_results_str}\n\n"
-                f"**Información Histórica Adicional:**\n"
-                f"- Los números de Balota regular más frecuentes históricamente (en cualquier posición, del 1 al 43) son: {top_balotas_str}.\n"
-                f"- Los números de SuperBalota más frecuentes históricamente (del 1 al 16) son: {top_superbalotas_str}.\n\n"
-                "Estoy buscando un posible conjunto de 5 números de balota y 1 SuperBalota. "
-                "Las 5 balotas deben estar en el rango de 1 a 43 y **estrictamente ordenadas de forma ascendente (Balota 1 < Balota 2 < Balota 3 < Balota 4 < Balota 5)**. "
-                "La SuperBalota debe estar en el rango de 1 a 16 y es independiente de las otras 5. "
-                "Por favor, sugiere un conjunto de números y justifica brevemente tu razonamiento, basándote en los datos proporcionados (últimos resultados y números frecuentes históricos). "
-                "Formato de salida deseado: Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]."
-            )
-            # --- FIN DEL PROMPT CLAVE ---
-
-            if st.button("Generar con Gemini"):
-                with st.spinner("Generando respuesta..."):
-                    try:
-                        response = model.generate_content(prompt)
-                        st.markdown("**Respuesta de Gemini:**")
-                        st.write(response.text)
-                    except Exception as e:
-                        st.error(f"Error al comunicarse con la API de Gemini: {e}")
-                        st.info("Esto puede deberse a un límite de cuota, un problema de red, o un problema con el prompt.")
-        else:
-            st.warning("La funcionalidad de Gemini AI no está disponible debido a un error de configuración de la API Key.")
-        
-        st.markdown("---")
-
-        st.subheader("2. Simulación de Montecarlo")
-        st.write("Genera sorteos hipotéticos basados en las probabilidades históricas de aparición de cada número, respetando el orden. Esto muestra las combinaciones que *podrían* ser más probables si el pasado influyera en el futuro.")
-        
-        num_sims = st.slider("Número de simulaciones (Montecarlo):", min_value=1000, max_value=100000, value=20000, step=1000)
-
-        if st.button("Ejecutar Simulación Montecarlo"):
-            if not df.empty:
                 with st.spinner(f"Ejecutando {num_sims} simulaciones de Montecarlo..."):
-                    most_frequent_sims, error_msg = generate_montecarlo_draw(df, num_sims)
-                    if most_frequent_sims is not None:
-                        st.markdown("##### Top 5 Combinaciones Más Frecuentes en la Simulación:")
-                        for (balotas_tuple, superbalota_num), count in most_frequent_sims.items():
-                            st.write(f"- Balotas: {list(balotas_tuple)}, SuperBalota: {superbalota_num} (Apareció {count} veces)")
-                        st.info("Estas combinaciones son las que se generaron más a menudo en el conjunto de simulaciones, respetando las distribuciones históricas y el orden.")
-                    else:
-                        st.error(error_msg)
-            else:
-                st.error("No se pueden ejecutar simulaciones sin datos cargados.")
-        
-        st.markdown("---")
+                    montecarlo_results = generate_montecarlo_draws(df, num_sims)
+                    st.session_state.all_forecasts.extend(montecarlo_results)
+                    st.success("Simulación de Montecarlo completada.")
 
-        st.subheader("3. Recomendación de Números 'Calientes'")
-        st.write("Obtén una combinación de balotas seleccionando los números más frecuentes para cada posición de balota, asegurando que se cumpla el orden ascendente.")
+                with st.spinner("Generando recomendaciones de Números 'Calientes'..."):
+                    hot_numbers_results = get_hot_numbers_recommendations(df)
+                    st.session_state.all_forecasts.extend(hot_numbers_results)
+                    st.success("Recomendaciones de Números 'Calientes' generadas.")
+                
+                st.info("Todos los pronósticos han sido generados y almacenados.")
+                
+            if st.session_state.all_forecasts:
+                st.subheader("Resultados de los Pronósticos:")
 
-        if st.button("Generar Números 'Calientes'"):
-            if not df.empty:
-                recommended_balotas, recommended_superbalota = get_hot_numbers_recommendation(df)
-                st.markdown("##### Tu Combinación 'Caliente' Sugerida:")
-                st.write(f"**Balotas:** {recommended_balotas}")
-                st.write(f"**SuperBalota:** {recommended_superbalota}")
-                st.info("Esta combinación se construye eligiendo el número más frecuente para cada posición que cumple la condición de ser mayor que el número anterior.")
+                # Mostrar resultados de Gemini AI
+                st.markdown("##### 1. Pronósticos de Gemini AI")
+                gemini_df = pd.DataFrame([f for f in st.session_state.all_forecasts if f['method'] == 'Gemini AI' or f['method'] == 'Gemini AI (Inválido/No Generado)'])
+                if not gemini_df.empty:
+                    st.dataframe(gemini_df[['balotas', 'superbalota', 'score']].style.format({'score': '{:.0f}'}))
+                    if st.session_state.gemini_raw_response:
+                        with st.expander("Ver respuesta cruda de Gemini (para depuración)"):
+                            st.text(st.session_state.gemini_raw_response)
+                else:
+                    st.write("No se generaron pronósticos de Gemini AI.")
+
+                # Mostrar resultados de Montecarlo
+                st.markdown("##### 2. Pronósticos de Simulación Montecarlo")
+                montecarlo_df = pd.DataFrame([f for f in st.session_state.all_forecasts if f['method'] == 'Monte Carlo'])
+                if not montecarlo_df.empty:
+                    st.dataframe(montecarlo_df[['balotas', 'superbalota', 'score']].style.format({'score': '{:.0f}'}))
+                else:
+                    st.write("No se generaron pronósticos de Montecarlo.")
+
+                # Mostrar resultados de Números Calientes
+                st.markdown("##### 3. Pronósticos de Números 'Calientes'")
+                hot_numbers_df = pd.DataFrame([f for f in st.session_state.all_forecasts if f['method'] == 'Números Calientes'])
+                if not hot_numbers_df.empty:
+                    st.dataframe(hot_numbers_df[['balotas', 'superbalota', 'score']].style.format({'score': '{:.0f}'}))
+                else:
+                    st.write("No se generaron pronósticos de Números 'Calientes'.")
+
+                st.markdown("---")
+                st.subheader("🏆 Top 3 Combinaciones con Mayor Puntaje de Frecuencia Histórica")
+                
+                # Filtrar combinaciones válidas antes de ordenar
+                valid_forecasts = [f for f in st.session_state.all_forecasts if f['balotas'] and f['superbalota'] is not None]
+                
+                if valid_forecasts:
+                    sorted_forecasts = sorted(valid_forecasts, key=lambda x: x['score'], reverse=True)
+                    top_3 = sorted_forecasts[:3]
+
+                    top_3_df = pd.DataFrame(top_3)
+                    st.dataframe(top_3_df[['balotas', 'superbalota', 'score', 'method']].style.format({'score': '{:.0f}'}))
+                    st.info("El 'Puntaje de Frecuencia Histórica' indica qué tan a menudo han aparecido los números de la combinación en los sorteos pasados. Un puntaje más alto sugiere que la combinación está compuesta por números históricamente más frecuentes.")
+                else:
+                    st.write("No hay combinaciones válidas para mostrar el Top 3.")
             else:
-                st.error("No se pueden generar recomendaciones sin datos cargados.")
+                st.write("Presiona 'Generar Todos los Pronósticos' para ver las sugerencias.")
+        else:
+            st.warning("La funcionalidad de Gemini AI no está disponible. Por favor, verifica tu API Key.")
 
 
     with tab3:
@@ -405,6 +596,8 @@ if not df.empty:
             * **Integración con Google Gemini AI** para explorar insights adicionales y sugerencias de números.
             * **Simulación de Montecarlo** para generar combinaciones hipotéticas basadas en probabilidades históricas.
             * **Recomendación de Números 'Calientes'** basada en la frecuencia de aparición por posición.
+            * **Puntaje de Frecuencia Histórica** para evaluar la "calidez" de las combinaciones.
+            * **Almacenamiento y comparación** de los pronósticos generados.
 
         **Desarrollado por:** Julian Torres (con asistencia de un modelo de lenguaje de Google).
         """)
