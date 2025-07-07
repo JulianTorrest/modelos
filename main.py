@@ -23,7 +23,7 @@ gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
 
 try:
     genai.configure(api_key=gemini_api_key)
-    model = genai.GenerativeModel('gemini-pro')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     st.success("API de Gemini configurada exitosamente (API Key incrustada en el código).")
 except Exception as e:
     st.error(f"Error al configurar la API de Gemini: {e}")
