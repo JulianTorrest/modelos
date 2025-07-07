@@ -16,20 +16,19 @@ st.title("🎰 Análisis Exploratorio de Datos y Predicción de Baloto con Gemin
 st.write("Bienvenido al panel interactivo de análisis de los resultados históricos del Baloto colombiano. Explora tendencias pasadas y experimenta con la IA de Gemini para posibles predicciones o insights.")
 
 # --- Configuración de la API Key de Gemini ---
-# IMPORTANTE: No hardcodear la API key directamente en el código de producción.
-# Para Streamlit Cloud, usa los secretos de la aplicación.
-# Por ahora, la cargaremos del secrets.toml
-# Crea un archivo .streamlit/secrets.toml con:
-#GOOGLE_API_KEY = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk"
+# ADVERTENCIA: La API Key está hardcodeada directamente en el código.
+# Esto NO es una práctica recomendada para producción debido a riesgos de seguridad.
+# Sin embargo, se hace a petición explícita.
+gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
+
 try:
-    gemini_api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=gemini_api_key)
     model = genai.GenerativeModel('gemini-pro')
-    st.success("API de Gemini configurada exitosamente.")
-except KeyError:
-    st.error("Error: La API Key de Gemini no se encontró en los secretos de Streamlit. "
-             "Asegúrate de que 'GOOGLE_API_KEY' esté definida en tu archivo .streamlit/secrets.toml")
-    model = None # Asegurarse de que el modelo sea None si la clave no está configurada
+    st.success("API de Gemini configurada exitosamente (API Key incrustada en el código).")
+except Exception as e:
+    st.error(f"Error al configurar la API de Gemini: {e}")
+    st.warning("La funcionalidad de Gemini AI podría no estar disponible.")
+    model = None # Asegurarse de que el modelo sea None si hay un error de configuración
 
 # --- URL del archivo CSV en GitHub ---
 url = "https://raw.githubusercontent.com/JulianTorrest/modelos/refs/heads/main/Baloto.csv"
@@ -202,7 +201,7 @@ if not df.empty:
                         st.error(f"Error al comunicarse con la API de Gemini: {e}")
                         st.info("Esto puede deberse a un límite de cuota, un problema de red, o un problema con el prompt.")
         else:
-            st.warning("La funcionalidad de Gemini AI no está disponible. Por favor, configura tu API Key.")
+            st.warning("La funcionalidad de Gemini AI no está disponible debido a un error de configuración de la API Key.")
 
     with tab3:
         st.header("ℹ️ Acerca de esta Aplicación")
