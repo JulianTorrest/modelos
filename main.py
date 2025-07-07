@@ -19,7 +19,8 @@ st.title("🎰 Análisis Exploratorio de Datos y Predicción de Baloto/Revancha 
 st.write("Bienvenido al panel interactivo de análisis de los resultados históricos del Baloto colombiano. Explora tendencias pasadas y experimenta con la IA de Gemini para posibles predicciones o insights.")
 
 # --- Configuración de la API Key de Gemini ---
-gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
+# gemini_api_key = st.secrets["GEMINI_API_KEY"] # Ideal para producción con Streamlit Secrets
+gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk"
 
 try:
     genai.configure(api_key=gemini_api_key)
@@ -78,6 +79,41 @@ else:
     st.session_state.selected_sorteo_type = 'Revancha'
 
 # --- Funciones de Utilidad ---
+
+@st.cache_data
+def get_positional_stats(df_current):
+    """
+    Calcula las estadísticas de min, max y frecuencias para cada posición de balota.
+    """
+    positional_stats = {}
+    if df_current.empty:
+        return positional_stats
+
+    for i in range(1, 6): # Balota 1 to Balota 5
+        col_name = f'Balota {i}'
+        data_for_pos = df_current[col_name]
+        positional_stats[col_name] = {
+            'min_observed': data_for_pos.min(),
+            'max_observed': data_for_pos.max(),
+            'frequencies': data_for_pos.value_counts(normalize=True).sort_index()
+        }
+    
+    superbalota_data = df_current['SuperBalota']
+    positional_stats['SuperBalota'] = {
+        'min_observed': superbalota_data.min(),
+        'max_observed': superbalota_data.max(),
+        'frequencies': superbalota_data.value_counts(normalize=True).sort_index()
+    }
+    return positional_stats
+
+# Pre-calcular estas estadísticas una vez al cargar los datos
+POSITIONAL_STATS = {}
+if not df.empty:
+    POSITIONAL_STATS = get_positional_stats(df)
+else:
+    st.warning("Datos no cargados, las estadísticas posicionales no estarán disponibles.")
+
+
 @st.cache_data
 def calculate_historical_frequency_score(df_current, balotas_list, superbalota_num):
     """
@@ -90,9 +126,16 @@ def calculate_historical_frequency_score(df_current, balotas_list, superbalota_n
 
     for i in range(5):
         col_name = f'Balota {i+1}'
-        score += df_current[col_name].value_counts().get(balotas_list[i], 0)
+        # Usar las frecuencias de la posición específica
+        if POSITIONAL_STATS and col_name in POSITIONAL_STATS:
+            score += POSITIONAL_STATS[col_name]['frequencies'].get(balotas_list[i], 0) * len(df_current) # Multiplicar por el total para revertir normalización y obtener conteo
+        else: # Fallback a conteo global si no hay stats posicionales
+             score += df_current[col_name].value_counts().get(balotas_list[i], 0)
 
-    score += df_current['SuperBalota'].value_counts().get(superbalota_num, 0)
+    if POSITIONAL_STATS and 'SuperBalota' in POSITIONAL_STATS:
+        score += POSITIONAL_STATS['SuperBalota']['frequencies'].get(superbalota_num, 0) * len(df_current)
+    else: # Fallback a conteo global
+        score += df_current['SuperBalota'].value_counts().get(superbalota_num, 0)
     return score
 
 @st.cache_data
@@ -101,41 +144,53 @@ def get_max_possible_score(df_current):
     Calcula el score máximo posible buscando la combinación de 5 balotas ordenadas
     que maximiza la suma de sus frecuencias posicionales, más la SuperBalota más frecuente.
     """
+    if df_current.empty or not POSITIONAL_STATS:
+        return 1 # Fallback
+
     max_score = 0
     
     # Calcular las frecuencias de cada número por posición
-    freq_by_pos = {}
-    for i in range(1, 6):
-        freq_by_pos[f'Balota {i}'] = df_current[f'Balota {i}'].value_counts()
-    superbalota_freq = df_current['SuperBalota'].value_counts()
+    freq_by_pos = {col: stats['frequencies'] for col, stats in POSITIONAL_STATS.items() if col.startswith('Balota')}
+    superbalota_freq = POSITIONAL_STATS['SuperBalota']['frequencies']
     
-    max_sb_freq = superbalota_freq.max() if not superbalota_freq.empty else 0
+    max_sb_freq = superbalota_freq.max() * len(df_current) if not superbalota_freq.empty else 0
 
     current_balotas = []
     prev_num = 0
     for i in range(1, 6):
         col_name = f'Balota {i}'
-        max_freq_num_for_pos = 0
-        best_num = 0
         
-        # Iterar sobre números válidos para la posición, mayores al anterior
-        # Ensure the range accounts for remaining balls
-        possible_upper_bound = 43 - (5 - i) 
+        # Consider ranges: min from previous ball + 1, and max from overall total - remaining balls
+        min_allowed_by_order = prev_num + 1
+        max_allowed_by_remaining_slots = 43 - (5 - i) 
         
+        # Also consider historical observed min/max for this specific position
+        historical_min_for_pos = POSITIONAL_STATS[col_name]['min_observed']
+        historical_max_for_pos = POSITIONAL_STATS[col_name]['max_observed']
+
+        # Combine all constraints for candidates
         candidates_in_range = [n for n in freq_by_pos[col_name].index.tolist() 
-                               if n > prev_num and n <= possible_upper_bound]
+                               if n >= min_allowed_by_order and 
+                                  n <= max_allowed_by_remaining_slots and
+                                  n >= historical_min_for_pos and
+                                  n <= historical_max_for_pos]
         
         if not candidates_in_range:
-            # Fallback if no hot numbers fit the range
-            chosen_num = prev_num + 1
-            if chosen_num > possible_upper_bound: # If even the next number is too high
-                return 0 # Indicate that a valid hot combination cannot be formed
-            max_freq_num_for_pos = freq_by_pos[col_name].get(chosen_num, 0)
+            # Fallback if no hot numbers fit the range, try to pick smallest possible within combined range
+            chosen_num = max(min_allowed_by_order, historical_min_for_pos)
+            if chosen_num > min(max_allowed_by_remaining_slots, historical_max_for_pos):
+                 return 0 # Cannot form a valid sequence
+            
+            # Ensure we can still pick 5 distinct increasing numbers
+            if chosen_num + (5 - i) > 43: # If next balls won't fit 
+                return 0
+            
+            max_freq_num_for_pos = freq_by_pos[col_name].get(chosen_num, 0) * len(df_current)
             best_num = chosen_num
         else:
             # Pick the hottest among valid candidates
             best_num = max(candidates_in_range, key=lambda x: freq_by_pos[col_name].get(x, 0))
-            max_freq_num_for_pos = freq_by_pos[col_name].get(best_num, 0)
+            max_freq_num_for_pos = freq_by_pos[col_name].get(best_num, 0) * len(df_current)
         
         current_balotas.append(best_num)
         prev_num = best_num
@@ -147,13 +202,12 @@ def get_max_possible_score(df_current):
 
 
 # Pre-calcular el score máximo posible una vez
-# Asegúrate de que df no esté vacío antes de llamar a esto
-MAX_POSSIBLE_SCORE = 1 # Initialize to 1 to avoid ZeroDivisionError even if calculation fails
+MAX_POSSIBLE_SCORE = 1 # Initialize to 1 to avoid ZeroDivisionError
 _temp_max_score_calculated = 0
 
-if not df.empty:
+if not df.empty and POSITIONAL_STATS:
     _temp_max_score_calculated = get_max_possible_score(df)
-    if _temp_max_score_calculated > 0: # Ensure it's a positive value
+    if _temp_max_score_calculated > 0:
         MAX_POSSIBLE_SCORE = _temp_max_score_calculated
     else:
         st.warning("Advertencia: El 'Score Máximo Posible' calculado fue 0 o inválido. El 'Nivel de Calidez (%)' se mostrará como 0% para todas las combinaciones.")
@@ -164,41 +218,59 @@ if not df.empty:
 def generate_montecarlo_draws(df_current, num_simulations=10000):
     """
     Genera 5 combinaciones de baloto usando Montecarlo,
-    respetando el orden y las distribuciones históricas de cada balota,
-    y calcula su puntaje de frecuencia.
+    respetando el orden, las distribuciones históricas de cada balota POSICIONAL,
+    y los rangos observados para cada posición.
     """
     simulated_draws_with_scores = []
-    
-    # Store unique combinations to avoid duplicates in the 5 results
     seen_combinations = set()
 
+    if not POSITIONAL_STATS:
+        st.error("Estadísticas posicionales no disponibles para Monte Carlo.")
+        return []
+
     attempts = 0
-    while len(simulated_draws_with_scores) < 5 and attempts < num_simulations * 2: # Limit attempts to avoid infinite loops
+    while len(simulated_draws_with_scores) < 5 and attempts < num_simulations * 2:
         current_draw = []
         prev_num = 0
 
         valid_combination_path = True
         for i in range(1, 6):
             col_name = f'Balota {i}'
-            min_allowed = prev_num + 1
-            max_allowed = 43 - (5 - i)
             
-            # Filter historical numbers for the current position and range
-            candidates = df_current[col_name][(df_current[col_name] >= min_allowed) & (df_current[col_name] <= max_allowed)].unique()
+            # Constraints from previous ball and remaining slots
+            min_allowed_by_order = prev_num + 1
+            max_allowed_by_remaining_slots = 43 - (5 - i)
             
-            if len(candidates) == 0:
-                # Fallback: if no historical data for specific range, use general range
-                candidates = np.arange(min_allowed, max_allowed + 1)
-                if len(candidates) == 0:
+            # Constraints from historical observed range for this position
+            historical_min_for_pos = POSITIONAL_STATS[col_name]['min_observed']
+            historical_max_for_pos = POSITIONAL_STATS[col_name]['max_observed']
+
+            # Combine all constraints
+            effective_min = max(min_allowed_by_order, historical_min_for_pos)
+            effective_max = min(max_allowed_by_remaining_slots, historical_max_for_pos)
+
+            if effective_min > effective_max: # No valid numbers possible for this position
+                valid_combination_path = False
+                break
+            
+            # Filter candidates based on effective range and positional frequencies
+            pos_frequencies = POSITIONAL_STATS[col_name]['frequencies']
+            
+            # Ensure `candidates` list for np.random.choice is not empty
+            candidates = [n for n in pos_frequencies.index.tolist() if effective_min <= n <= effective_max]
+
+            if not candidates:
+                # Fallback: if no historical hot numbers in range, use the whole effective range
+                candidates = list(range(effective_min, effective_max + 1))
+                if not candidates: # Still no candidates, this path is invalid
                     valid_combination_path = False
                     break 
 
-            frequencies = df_current[col_name].value_counts(normalize=True).sort_index()
-            # Ensure all candidates have a weight; if not in frequencies, assign a small non-zero
-            weights = [frequencies.get(n, 0.0001) for n in candidates]
+            # Calculate weights for candidates based on positional frequencies
+            weights = [pos_frequencies.get(n, 0.0001) for n in candidates] # Small non-zero for unseen numbers
             weights_sum = sum(weights)
             if weights_sum == 0: 
-                weights = [1/len(candidates)] * len(candidates)
+                weights = [1/len(candidates)] * len(candidates) # Uniform if all weights are zero
             else:
                 weights = [w / weights_sum for w in weights]
 
@@ -207,9 +279,10 @@ def generate_montecarlo_draws(df_current, num_simulations=10000):
             prev_num = chosen_num
         
         if valid_combination_path and len(current_draw) == 5:
-            superbalota_frequencies = df_current['SuperBalota'].value_counts(normalize=True).sort_index()
-            sb_candidates = np.arange(1, 17)
-            sb_weights = [superbalota_frequencies.get(n, 0.0001) for n in sb_candidates]
+            # SuperBalota selection (using its specific historical distribution)
+            sb_frequencies = POSITIONAL_STATS['SuperBalota']['frequencies']
+            sb_candidates = list(range(1, 17)) # Full possible range for SB
+            sb_weights = [sb_frequencies.get(n, 0.0001) for n in sb_candidates]
             sb_weights_sum = sum(sb_weights)
             if sb_weights_sum == 0:
                 sb_chosen = np.random.choice(sb_candidates)
@@ -232,7 +305,7 @@ def generate_montecarlo_draws(df_current, num_simulations=10000):
         attempts += 1
     
     if not simulated_draws_with_scores:
-        st.warning("No se pudieron generar suficientes sorteos simulados por Monte Carlo. Intente aumentar el número de simulaciones.")
+        st.warning("No se pudieron generar suficientes sorteos simulados por Monte Carlo. Intente aumentar el número de simulaciones o revisar los datos históricos.")
         
     return simulated_draws_with_scores
 
@@ -240,45 +313,64 @@ def generate_montecarlo_draws(df_current, num_simulations=10000):
 def get_hot_numbers_recommendations(df_current):
     """
     Genera 5 recomendaciones de balotas basadas en los números más frecuentes
-    para cada posición, respetando el orden, y calcula su puntaje.
+    para cada POSICIÓN, respetando el orden y los rangos históricos.
     """
     recommendations = []
     seen_combinations = set()
 
+    if not POSITIONAL_STATS:
+        st.error("Estadísticas posicionales no disponibles para Números Calientes.")
+        return []
+
     # Pre-calcular las frecuencias por posición para un acceso rápido
-    freq_by_pos = {}
-    for i in range(1, 6):
-        freq_by_pos[f'Balota {i}'] = df_current[f'Balota {i}'].value_counts()
-    superbalota_freq = df_current['SuperBalota'].value_counts()
+    freq_by_pos = {col: stats['frequencies'] for col, stats in POSITIONAL_STATS.items() if col.startswith('Balota')}
+    superbalota_freq = POSITIONAL_STATS['SuperBalota']['frequencies']
     
+    # Get the hottest SuperBalota (or default to 1 if none)
     hot_superbalota_candidates = superbalota_freq.index.tolist()
     if not hot_superbalota_candidates: hot_superbalota_candidates = list(range(1, 17))
 
+
     # --- Generar la combinación más caliente "pura" (la primera) ---
+    # This tries to pick the *absolute* hottest for each position, given constraints.
     current_balotas = []
     prev_num = 0
     for i in range(1, 6):
         col_name = f'Balota {i}'
-        possible_numbers = freq_by_pos[col_name].index.tolist()
         
-        # Filter for order and range
-        valid_candidates = [n for n in possible_numbers if n > prev_num and n <= (43 - (5 - i))]
+        min_allowed_by_order = prev_num + 1
+        max_allowed_by_remaining_slots = 43 - (5 - i)
         
-        if not valid_candidates:
-            # Fallback to next possible number if no hot number fits
-            chosen_num = prev_num + 1
-            if chosen_num > (43 - (5-i)): # Check if fallback makes it impossible
-                current_balotas = [] # Mark as invalid path
-                break
+        historical_min_for_pos = POSITIONAL_STATS[col_name]['min_observed']
+        historical_max_for_pos = POSITIONAL_STATS[col_name]['max_observed']
+
+        effective_min = max(min_allowed_by_order, historical_min_for_pos)
+        effective_max = min(max_allowed_by_remaining_slots, historical_max_for_pos)
+
+        if effective_min > effective_max: # No valid number for this position
+            current_balotas = [] # Mark as invalid path
+            break
+
+        # Filter numbers that have appeared historically in this position AND are within effective range
+        valid_candidates_for_pos = [n for n in freq_by_pos[col_name].index.tolist() 
+                                    if effective_min <= n <= effective_max]
+        
+        if not valid_candidates_for_pos:
+            # Fallback: if no historical hot numbers fit the combined range, choose the smallest possible
+            chosen_num = effective_min
+            # Double check if this fallback number allows forming a valid sequence
+            if chosen_num + (5 - i) > 43 or chosen_num > effective_max:
+                current_balotas = []
+                break # Cannot form a valid sequence
         else:
             # Pick the hottest among valid candidates
-            chosen_num = max(valid_candidates, key=lambda x: freq_by_pos[col_name].get(x, 0))
+            chosen_num = max(valid_candidates_for_pos, key=lambda x: freq_by_pos[col_name].get(x, 0))
         
         current_balotas.append(chosen_num)
         prev_num = chosen_num
     
     if len(current_balotas) == 5: # Only if a valid 5-ball combo was formed
-        hot_superbalota = hot_superbalota_candidates[0] if hot_superbalota_candidates else 1 # Fallback
+        hot_superbalota = hot_superbalota_candidates[0] if hot_superbalota_candidates else 1 # Fallback to 1
         
         score = calculate_historical_frequency_score(df_current, current_balotas, hot_superbalota)
         calidez = (score / MAX_POSSIBLE_SCORE * 100) if MAX_POSSIBLE_SCORE > 0 else 0
@@ -304,24 +396,39 @@ def get_hot_numbers_recommendations(df_current):
 
         for i in range(1, 6):
             col_name = f'Balota {i}'
-            # Take top N candidates for this position, then filter by order/range
-            top_n_candidates = freq_by_pos[col_name].head(5).index.tolist() # Top 5 hot numbers for this position
             
-            candidates_for_pos = [n for n in top_n_candidates if n > prev_num and n <= (43 - (5 - i))]
+            min_allowed_by_order = prev_num + 1
+            max_allowed_by_remaining_slots = 43 - (5 - i)
             
-            if not candidates_for_pos:
-                # Fallback to any number in range if no hot candidate fits
-                candidates_for_pos = list(range(prev_num + 1, 44 - (5 - i) + 1)) # +1 to make range inclusive
-                if not candidates_for_pos: 
+            historical_min_for_pos = POSITIONAL_STATS[col_name]['min_observed']
+            historical_max_for_pos = POSITIONAL_STATS[col_name]['max_observed']
+
+            effective_min = max(min_allowed_by_order, historical_min_for_pos)
+            effective_max = min(max_allowed_by_remaining_slots, historical_max_for_pos)
+
+            if effective_min > effective_max:
+                valid_combination = False
+                break
+            
+            # Take top N candidates for this position, then filter by combined constraints
+            top_n_candidates_for_pos = freq_by_pos[col_name].head(10).index.tolist() # Consider top 10 hot numbers
+            
+            candidates_in_range_and_hot = [n for n in top_n_candidates_for_pos 
+                                           if effective_min <= n <= effective_max]
+            
+            if not candidates_in_range_and_hot:
+                # Fallback to any number in effective range if no hot candidate fits
+                candidates_in_range_and_hot = list(range(effective_min, effective_max + 1))
+                if not candidates_in_range_and_hot: 
                     valid_combination = False
                     break
             
-            chosen_num = np.random.choice(candidates_for_pos)
+            chosen_num = np.random.choice(candidates_in_range_and_hot)
             temp_balotas.append(chosen_num)
             prev_num = chosen_num
         
         if valid_combination and len(temp_balotas) == 5:
-            temp_superbalota = np.random.choice(hot_superbalota_candidates)
+            temp_superbalota = np.random.choice(hot_superbalota_candidates) # Still pick from overall hot SB
             
             combo_key = (tuple(temp_balotas), temp_superbalota)
             if combo_key not in seen_combinations:
@@ -362,16 +469,31 @@ def get_gemini_recommendations(df_current, model_ai, latest_results_str, top_bal
 
     gemini_forecasts = []
     
-    # --- EL PROMPT CLAVE CON LA INFORMACIÓN HISTÓRICA ADICIONAL ---
+    # --- Modificar el prompt para incluir información de rango POSICIONAL ---
+    # Aquí es donde realmente instruimos a Gemini sobre la tendencia de rangos.
+    # Extraer y formatar la información de rangos posicionales observados
+    positional_range_info = ""
+    if POSITIONAL_STATS:
+        for i in range(1, 6):
+            col_name = f'Balota {i}'
+            if col_name in POSITIONAL_STATS:
+                min_obs = POSITIONAL_STATS[col_name]['min_observed']
+                max_obs = POSITIONAL_STATS[col_name]['max_observed']
+                positional_range_info += f"  - Balota {i} (rango histórico observado): {min_obs} a {max_obs}\n"
+        if positional_range_info:
+            positional_range_info = "**Rangos Históricos Observados por Posición de Balota:**\n" + positional_range_info
+    
     prompt = (
         f"Basado en los siguientes últimos 5 resultados del Baloto/Revancha:\n\n{latest_results_str}\n\n"
         f"**Información Histórica Adicional:**\n"
         f"- Los números de Balota regular más frecuentes históricamente (en cualquier posición, del 1 al 43) son: {top_balotas_str}.\n"
-        f"- Los números de SuperBalota más frecuentes históricamente (del 1 al 16) son: {top_superbalotas_str}.\n\n"
+        f"- Los números de SuperBalota más frecuentes históricamente (del 1 al 16) son: {top_superbalotas_str}.\n"
+        f"{positional_range_info}\n" # Incluir la nueva información
         "Por favor, sugiere **5 conjuntos distintos** de 5 números de balota y 1 SuperBalota. "
         "Para cada conjunto, las 5 balotas deben estar en el rango de 1 a 43 y **estrictamente ordenadas de forma ascendente (Balota 1 < Balota 2 < Balota 3 < Balota 4 < Balota 5)**. "
+        "**Es CRÍTICO que los números para cada balota (Balota 1, Balota 2, etc.) tiendan a respetar sus rangos históricos observados para esa posición específica.** "
         "La SuperBalota debe estar en el rango de 1 a 16 y es independiente de las otras 5. "
-        "Justifica brevemente tu razonamiento para cada conjunto, basándote en los datos proporcionados (últimos resultados y números frecuentes históricos). "
+        "Justifica brevemente tu razonamiento para cada conjunto, basándote en los datos proporcionados (últimos resultados, números frecuentes históricos y **rangos posicionales**).\n"
         "**Formato de salida deseado para cada conjunto (importante para el parsing):**\n"
         "**Conjunto N:** Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]. Razón: [Tu justificación]\n"
         "Asegúrate de que cada conjunto sea único y siga el formato exacto."
@@ -395,9 +517,27 @@ def get_gemini_recommendations(df_current, model_ai, latest_results_str, top_bal
                 superbalota = int(match[5])
 
                 # Validate ranges and order
-                if (1 <= balotas[0] < balotas[1] < balotas[2] < balotas[3] < balotas[4] <= 43 and
-                    1 <= superbalota <= 16):
-                    
+                is_valid = True
+                if not (1 <= balotas[0] < balotas[1] < balotas[2] < balotas[3] < balotas[4] <= 43 and
+                        1 <= superbalota <= 16):
+                    is_valid = False
+                
+                # Further validate against positional historical ranges for Gemini's output
+                if is_valid and POSITIONAL_STATS:
+                    for i in range(5):
+                        col_name = f'Balota {i+1}'
+                        num = balotas[i]
+                        if col_name in POSITIONAL_STATS:
+                            min_obs = POSITIONAL_STATS[col_name]['min_observed']
+                            max_obs = POSITIONAL_STATS[col_name]['max_observed']
+                            if not (min_obs <= num <= max_obs):
+                                # If Gemini suggests a number outside its historical positional range,
+                                # we might consider it less "valid" for the purpose of this simulation.
+                                # For strictness, we'll mark it invalid.
+                                is_valid = False
+                                break
+
+                if is_valid:                    
                     combo_key = (tuple(balotas), superbalota)
                     if combo_key not in seen_combinations:
                         score = calculate_historical_frequency_score(df_current, balotas, superbalota)
@@ -411,13 +551,13 @@ def get_gemini_recommendations(df_current, model_ai, latest_results_str, top_bal
                         })
                         seen_combinations.add(combo_key)
                         parsed_count += 1
-                # else: st.warning(f"Gemini sugirió una combinación inválida (rango/orden): Balotas: {balotas}, SuperBalota: {superbalota}")
+                # else: st.warning(f"Gemini sugirió una combinación inválida (rango/orden/posicional): Balotas: {balotas}, SuperBalota: {superbalota}")
 
             except ValueError:
                 st.warning(f"No se pudo parsear una combinación de Gemini de '{match}'.")
         
         if parsed_count == 0:
-            st.warning("Gemini no pudo generar combinaciones válidas en el formato esperado.")
+            st.warning("Gemini no pudo generar combinaciones válidas en el formato esperado o que cumplan los criterios posicionales.")
             st.info("Respuesta cruda de Gemini (para depuración): " + response.text)
 
     except Exception as e:
@@ -447,7 +587,7 @@ def simulate_winnings(selected_balotas, selected_superbalota, historical_df, num
         return 0, 0, "Combinaicón inválida para simulación."
 
     # Convertir la combinación seleccionada a un formato comparable (tuple)
-    selected_combo = (tuple(selected_balotas), selected_superbalota)
+    selected_combo = (tuple(sorted(selected_balotas)), selected_superbalota) # Ensure sorted for comparison
     
     # Crear un DataFrame con los sorteos históricos en el mismo formato
     historical_combos = []
@@ -487,69 +627,90 @@ def smart_historical_simulation(df_current, num_combinations_per_method=100):
     """
     st.info(f"Realizando Simulación Histórica 'Inteligente' para {st.session_state.selected_sorteo_type}. Esto podría tomar unos segundos...")
 
-    total_wins = 0
-    wins_by_method = {'Monte Carlo': 0, 'Números Calientes': 0}
+    if df_current.empty or not POSITIONAL_STATS:
+        st.error("Datos o estadísticas posicionales no disponibles para la simulación.")
+        return 0, 0, 0, "Simulación no ejecutada debido a datos faltantes."
+
+    wins_by_method = {'Monte Carlo': set(), 'Números Calientes': set()} # Use sets to count unique winning historical draws
     
-    # Pre-generate a larger pool of "smart" combinations using the existing methods
-    # These represent the *types* of combinations our models would suggest
-    all_simulated_combinations = []
+    all_simulated_combinations_with_method = [] # List of {'combo': (balotas_tuple, sb_num), 'method': 'Method Name'}
 
     # Generate a pool of Monte Carlo combinations
-    mc_pool = []
+    mc_pool_unique = set()
     mc_attempts = 0
-    while len(mc_pool) < num_combinations_per_method and mc_attempts < num_combinations_per_method * 5:
-        sim_draws = generate_montecarlo_draws(df_current, 1) # Generate one at a time
-        if sim_draws and sim_draws[0]['balotas'] and sim_draws[0]['superbalota'] is not None:
-            mc_pool.append((tuple(sim_draws[0]['balotas']), sim_draws[0]['superbalota']))
+    while len(mc_pool_unique) < num_combinations_per_method and mc_attempts < num_combinations_per_method * 10: 
+        sim_draws_list = generate_montecarlo_draws(df_current, 1) 
+        if sim_draws_list and sim_draws_list[0]['balotas'] and sim_draws_list[0]['superbalota'] is not None:
+            combo_tuple = (tuple(sim_draws_list[0]['balotas']), sim_draws_list[0]['superbalota'])
+            mc_pool_unique.add(combo_tuple)
         mc_attempts += 1
-    all_simulated_combinations.extend([{'combo': c, 'method': 'Monte Carlo'} for c in set(mc_pool)]) # Use set for uniqueness
+    
+    all_simulated_combinations_with_method.extend([{'combo': c, 'method': 'Monte Carlo'} for c in mc_pool_unique])
 
 
     # Generate a pool of Hot Numbers combinations
-    hot_pool = []
+    hot_pool_unique = set()
     hot_attempts = 0
-    while len(hot_pool) < num_combinations_per_method and hot_attempts < num_combinations_per_method * 5:
-        hot_draws = get_hot_numbers_recommendations(df_current)
-        # Filter out invalid placeholders and ensure unique
-        valid_hot_draws = [ (tuple(d['balotas']), d['superbalota']) for d in hot_draws 
-                           if d['balotas'] and d['superbalota'] is not None and (tuple(d['balotas']), d['superbalota']) not in set(hot_pool) ]
-        if valid_hot_draws:
-            hot_pool.extend(valid_hot_draws[:min(len(valid_hot_draws), num_combinations_per_method - len(hot_pool))])
+    while len(hot_pool_unique) < num_combinations_per_method and hot_attempts < num_combinations_per_method * 10:
+        hot_draws_batch = get_hot_numbers_recommendations(df_current) 
+        for d in hot_draws_batch:
+            if d['balotas'] and d['superbalota'] is not None:
+                combo_tuple = (tuple(d['balotas']), d['superbalota'])
+                hot_pool_unique.add(combo_tuple)
+            if len(hot_pool_unique) >= num_combinations_per_method: 
+                break
         hot_attempts += 1
-    all_simulated_combinations.extend([{'combo': c, 'method': 'Números Calientes'} for c in set(hot_pool)])
+    all_simulated_combinations_with_method.extend([{'combo': c, 'method': 'Números Calientes'} for c in hot_pool_unique])
 
-    # Convert historical draws to a comparable format
-    historical_winning_combos = []
+    # Convert historical draws to a comparable format, ensuring balotas are sorted
+    historical_winning_combos_set = set() # Store as a set for O(1) lookup
     for index, row in df_current.iterrows():
         balotas_hist = tuple(sorted([row[f'Balota {i}'] for i in range(1, 6)]))
         superbalota_hist = row['SuperBalota']
-        historical_winning_combos.append((balotas_hist, superbalota_hist))
+        historical_winning_combos_set.add((balotas_hist, superbalota_hist))
     
-    historical_winning_combos_set = set(historical_winning_combos) # For faster lookup
+    st.subheader("📊 Depuración de Simulación Histórica")
+    with st.expander("Ver detalles de las combinaciones generadas y comparadas"):
+        if all_simulated_combinations_with_method:
+            st.write(f"**Muestra de las primeras 10 combinaciones generadas ({len(all_simulated_combinations_with_method)} en total):**")
+            sample_generated_df = pd.DataFrame([{'Balotas': c['combo'][0], 'SuperBalota': c['combo'][1], 'Método': c['method']} 
+                                                 for c in all_simulated_combinations_with_method[:min(10, len(all_simulated_combinations_with_method))]])
+            st.dataframe(sample_generated_df)
+        
+        if historical_winning_combos_set:
+            st.write(f"**Muestra de las primeras 10 combinaciones históricas ganadoras (únicas y normalizadas, {len(historical_winning_combos_set)} en total):**")
+            sample_historical_df = pd.DataFrame([{'Balotas': c[0], 'SuperBalota': c[1]} for c in list(historical_winning_combos_set)[:min(10, len(historical_winning_combos_set))]])
+            st.dataframe(sample_historical_df)
+        
+        st.write(f"**Número de combinaciones Monte Carlo únicas en el pool:** {len(mc_pool_unique)}")
+        st.write(f"**Número de combinaciones Números Calientes únicas en el pool:** {len(hot_pool_unique)}")
+        st.write(f"**Número de sorteos históricos únicos a verificar:** {len(historical_winning_combos_set)}")
 
-    # Now, check how many historical winning combos are "covered" by our generated pools
-    matched_historical_draws_by_method = {'Monte Carlo': set(), 'Números Calientes': set()}
-    
-    for sim_combo_info in all_simulated_combinations:
+
+    # Check how many historical winning combos are "covered" by our generated pools
+    for sim_combo_info in all_simulated_combinations_with_method:
         combo = sim_combo_info['combo']
         method = sim_combo_info['method']
         
         if combo in historical_winning_combos_set:
-            matched_historical_draws_by_method[method].add(combo)
+            wins_by_method[method].add(combo) # Add the historical winning combo itself
+            st.success(f"DEBUG: ¡Coincidencia encontrada! Combo: {combo}, Método: {method}")
 
-    total_unique_wins_mc = len(matched_historical_draws_by_method['Monte Carlo'])
-    total_unique_wins_hot = len(matched_historical_draws_by_method['Números Calientes'])
+
+    total_unique_wins_mc = len(wins_by_method['Monte Carlo'])
+    total_unique_wins_hot = len(wins_by_method['Números Calientes'])
     
     # Combined unique wins (if a draw was covered by both, count once for total)
-    all_unique_wins_set = matched_historical_draws_by_method['Monte Carlo'].union(matched_historical_draws_by_method['Números Calientes'])
+    all_unique_wins_set = wins_by_method['Monte Carlo'].union(wins_by_method['Números Calientes'])
     total_unique_wins = len(all_unique_wins_set)
 
     message = f"**Resultados de la Simulación Histórica 'Inteligente' para {st.session_state.selected_sorteo_type}**:\n\n"
-    message += f"Se generaron {num_combinations_per_method} combinaciones por cada método y se compararon con {len(df_current)} sorteos históricos reales.\n"
-    message += f"- **Combinaciones de Monte Carlo habrían acertado:** {total_unique_wins_mc} sorteos históricos.\n"
-    message += f"- **Combinaciones de Números Calientes habrían acertado:** {total_unique_wins_hot} sorteos históricos.\n"
-    message += f"**Total de sorteos históricos cubiertos por al menos un método:** {total_unique_wins}.\n\n"
+    message += f"Se intentaron generar hasta {num_combinations_per_method} combinaciones *únicas* por cada método y se compararon con {len(df_current)} sorteos históricos reales.\n"
+    message += f"- **Combinaciones de Monte Carlo habrían acertado:** {total_unique_wins_mc} sorteos históricos únicos.\n"
+    message += f"- **Combinaciones de Números Calientes habrían acertado:** {total_unique_wins_hot} sorteos históricos únicos.\n"
+    message += f"**Total de sorteos históricos únicos cubiertos por al menos un método:** {total_unique_wins}.\n\n"
     message += "Esto muestra la capacidad de los modelos para generar combinaciones que han sido ganadoras en el pasado."
+    message += "\n*Nota: Un resultado de cero puede indicar que las combinaciones ganadoras son extremadamente raras o que los métodos de generación necesitan ajuste para capturar patrones más diversos.*"
 
     return total_unique_wins_mc, total_unique_wins_hot, total_unique_wins, message
 
@@ -828,8 +989,8 @@ if not df.empty:
         * Mapa de Calor Consolidado para visualizar el conteo de números por balota.
         * **Herramientas de Pronóstico y Simulación:**
             * **Integración con Google Gemini AI:** Genera 5 sugerencias de números con justificación.
-            * **Simulación de Montecarlo:** Genera 5 combinaciones hipotéticas basadas en probabilidades históricas.
-            * **Recomendación de Números 'Calientes':** Genera 5 combinaciones basadas en la frecuencia de aparición por posición.
+            * **Simulación de Montecarlo:** Genera 5 combinaciones hipotéticas basadas en probabilidades históricas y **rangos observados por posición**.
+            * **Recomendación de Números 'Calientes':** Genera 5 combinaciones basadas en la frecuencia de aparición por posición y **rangos observados por posición**.
             * **Puntaje de Frecuencia Histórica y Nivel de Calidez (%):** Evalúa la "calidez" de las combinaciones en relación con los patrones históricos.
             * **Almacenamiento y Comparación:** Guarda y muestra el Top 3 de los pronósticos generados.
             * **Simulación de Ganancias Históricas (Específica):** Estima ganancias al jugar una combinación N veces contra los sorteos históricos.
