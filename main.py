@@ -20,7 +20,7 @@ st.write("Bienvenido al panel interactivo de análisis de los resultados histór
 gemini_api_key = "AIzaSyAo1mZnBvslWoUKot7svYIo2K3fZIrLgRk" # ¡TU API KEY AQUÍ!
 
 try:
-    genai.configure(api_key=gemini_api_key)
+    genai.configure(api_api_key=gemini_api_key)
     model = genai.GenerativeModel('gemini-1.5-flash') # Usando gemini-1.5-flash para mejor disponibilidad
     st.success("API de Gemini configurada exitosamente con 'gemini-1.5-flash'.")
 except Exception as e:
@@ -53,8 +53,8 @@ def load_data(data_url):
 # --- Cargar los datos ---
 df = load_data(url)
 
-# --- Funciones de Pronóstico y Simulación ---
-
+# --- Funciones de Pronóstico y Simulación (sin cambios aquí) ---
+# ... (Mantén las funciones generate_montecarlo_draw y get_hot_numbers_recommendation tal cual) ...
 def generate_montecarlo_draw(df, num_simulations=10000):
     """
     Genera combinaciones de baloto usando Montecarlo,
@@ -78,32 +78,25 @@ def generate_montecarlo_draw(df, num_simulations=10000):
             candidates = df[col_name][(df[col_name] >= min_allowed) & (df[col_name] <= max_allowed)].unique()
             
             if len(candidates) == 0:
-                # Si no hay candidatos válidos en el rango, buscar en el rango general
                 candidates = np.arange(min_allowed, max_allowed + 1)
                 if len(candidates) == 0:
-                    # En un caso muy extremo, si no hay candidatos posibles, romper y reintentar
                     current_draw = []
                     break
 
-            # Usar la distribución de frecuencia de esa balota específica
             frequencies = df[col_name].value_counts(normalize=True).sort_index()
             
-            # Muestrear de los candidatos, ponderando por su frecuencia histórica
-            # Se usa .get(n, 0.0001) para asignar una pequeña probabilidad a números no vistos.
             weights = [frequencies.get(n, 0.0001) for n in candidates]
             weights_sum = sum(weights)
-            if weights_sum == 0: # Evitar división por cero si todos los pesos son 0
-                weights = [1/len(candidates)] * len(candidates) # Distribuir uniformemente
+            if weights_sum == 0:
+                weights = [1/len(candidates)] * len(candidates)
             else:
-                weights = [w / weights_sum for w in weights] # Normalizar pesos
+                weights = [w / weights_sum for w in weights]
 
             chosen_num = np.random.choice(candidates, p=weights)
             current_draw.append(chosen_num)
             prev_num = chosen_num
         
-        # Si se generaron las 5 balotas ordenadas correctamente
         if len(current_draw) == 5:
-            # Generar SuperBalota de forma independiente
             superbalota_frequencies = df['SuperBalota'].value_counts(normalize=True).sort_index()
             sb_candidates = np.arange(1, 17)
             sb_weights = [superbalota_frequencies.get(n, 0.0001) for n in sb_candidates]
@@ -119,8 +112,7 @@ def generate_montecarlo_draw(df, num_simulations=10000):
     if not simulated_draws:
         return None, "No se pudieron generar sorteos simulados que cumplan las reglas. Intente aumentar el número de simulaciones."
 
-    # Contar las combinaciones más frecuentes
-    draw_counts = pd.Series(simulated_draws).value_counts().head(5) # Top 5 combinaciones más frecuentes
+    draw_counts = pd.Series(simulated_draws).value_counts().head(5)
     return draw_counts, None
 
 
@@ -135,31 +127,22 @@ def get_hot_numbers_recommendation(df):
     for i in range(1, 6):
         col_name = f'Balota {i}'
         
-        # Obtener los números más frecuentes para esta balota
-        # que sean mayores que el número anterior
-        # y que dejen espacio para las balotas restantes
         min_allowed = prev_num + 1
         max_allowed = 43 - (5 - i) 
         
-        # Filtrar solo los números posibles y luego ver su frecuencia
         possible_numbers = df[col_name][(df[col_name] >= min_allowed) & (df[col_name] <= max_allowed)]
         
         if possible_numbers.empty:
-            # Si no hay ningún número histórico que cumpla el criterio, tomar el siguiente número válido
             chosen_num = min_allowed
         else:
-            # Tomar el número más frecuente que cumpla el criterio
-            # Si hay empate, toma el menor de los más frecuentes
             chosen_num = possible_numbers.value_counts().sort_index(ascending=True).idxmax()
 
         recommended_balotas.append(chosen_num)
         prev_num = chosen_num
 
-    # SuperBalota: el número más frecuente
     hot_superbalota = df['SuperBalota'].value_counts().idxmax()
     
     return recommended_balotas, hot_superbalota
-
 
 # --- Verificar si los datos se cargaron correctamente ---
 if not df.empty:
@@ -171,7 +154,6 @@ if not df.empty:
     with tab1:
         st.header("Análisis Exploratorio de Datos Históricos")
 
-        # --- Sección 1: Primeras Filas y Estructura del DataFrame ---
         st.subheader("🔍 Primeras Filas del Conjunto de Datos")
         st.dataframe(df.head())
 
@@ -185,7 +167,6 @@ if not df.empty:
         st.write("Estadísticas descriptivas básicas para las balotas:")
         st.dataframe(df[['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']].describe())
 
-        # --- Sección Nueva: Mapa de Calor por Balota (Consolidado) ---
         st.header("🔥 Mapa de Calor Consolidado por Balota")
         st.write("Explora la distribución consolidada de números para cada posición de balota, eligiendo entre el conteo de apariciones, el promedio o la mediana.")
 
@@ -219,7 +200,7 @@ if not df.empty:
             sns.heatmap(
                 heatmap_final,
                 annot=True,
-                fmt=".0f", # Formato de enteros para conteo
+                fmt=".0f",
                 cmap='viridis',
                 linewidths=.5,
                 linecolor='black',
@@ -233,7 +214,6 @@ if not df.empty:
             st.info("Para un 'Mapa de Calor Consolidado por Balota' (Número vs Posición), la métrica de 'Conteo' es la más significativa. El 'Promedio' o 'Mediana' de los números en sí mismos no tienen una variación útil en esta vista. Los gráficos de tendencias por año ya muestran promedios y medianas a lo largo del tiempo. Por favor, selecciona 'Conteo' para ver el mapa de calor.")
             
 
-        # --- Sección 2: Distribución de Frecuencia de las Balotas (EXISTENTE) ---
         st.subheader("📈 Distribución de Frecuencia de las Balotas")
         st.write("Estos histogramas muestran la frecuencia con la que ha aparecido cada número **en su respectiva posición de balota** y en la SuperBalota. Recuerda que las balotas 1 a 5 están ordenadas numéricamente.")
 
@@ -256,7 +236,6 @@ if not df.empty:
         plt.tight_layout()
         st.pyplot(fig1)
 
-        # --- Sección 3: Balotas Más Frecuentes (Global y SuperBalota) (EXISTENTE) ---
         st.subheader("⭐ Balotas Más Frecuentes")
         st.write("Identifica los números que han sido los más 'afortunados' en la historia del Baloto, considerando todas las posiciones para las balotas regulares.")
 
@@ -283,7 +262,6 @@ if not df.empty:
             ax3.set_ylabel('Frecuencia')
             st.pyplot(fig3)
 
-        # --- Sección 4: Análisis de Correlación (EXISTENTE) ---
         st.subheader("🔗 Matriz de Correlación entre Balotas")
         st.write("Aunque las balotas de un sorteo individual son independientes, esta matriz muestra si existe alguna correlación numérica **observada** entre las *posiciones* de las balotas a lo largo del tiempo, teniendo en cuenta su orden ascendente.")
         numeric_cols = ['Balota 1', 'Balota 2', 'Balota 3', 'Balota 4', 'Balota 5', 'SuperBalota']
@@ -294,7 +272,6 @@ if not df.empty:
         ax4.set_title('Matriz de Correlación entre Balotas')
         st.pyplot(fig4)
 
-        # --- Sección 5: Tendencia Anual del Promedio de Cada Balota (EXISTENTE) ---
         st.subheader("⏳ Tendencia Anual del Promedio de Cada Balota")
         st.write("Esta gráfica muestra cómo ha variado el **promedio de los números** para cada balota (Balota 1 a Balota 5) y la SuperBalota a lo largo de los años. Esto puede indicar si los números tendieron a ser más altos o bajos en ciertos años para cada posición.")
 
@@ -309,7 +286,6 @@ if not df.empty:
         ax5.grid(True, linestyle='--', alpha=0.7)
         st.pyplot(fig5)
 
-        # --- Sección 6: Distribución Anual de Números por Balota (Boxplots) (EXISTENTE) ---
         st.subheader("📅 Distribución Anual de Números por Balota")
         st.write("Estos diagramas de caja muestran la distribución de los números para cada balota (Balota 1 a Balota 5) y la SuperBalota, agrupados por año. Puedes observar la mediana, los cuartiles y los valores atípicos.")
 
@@ -327,28 +303,42 @@ if not df.empty:
         plt.tight_layout()
         st.pyplot(fig6)
 
-    with tab2: # Pestaña renombrada a "Pronósticos y Simulación"
+    with tab2:
         st.header("🤖 Herramientas de Pronóstico y Simulación")
         st.write("Aquí puedes explorar diferentes enfoques para generar posibles combinaciones de Baloto, incluyendo simulaciones y recomendaciones basadas en datos históricos. **Recuerda:** Los sorteos de lotería son aleatorios y estas herramientas son para fines de entretenimiento y análisis, no garantizan resultados.")
 
         if model:
             st.subheader("1. Pregunta a Gemini AI")
             st.markdown("""
-            Usa la inteligencia artificial de Google Gemini para obtener insights o sugerencias de números. Gemini intentará seguir tus instrucciones de orden y rango.
+            Usa la inteligencia artificial de Google Gemini para obtener insights o sugerencias de números. Gemini intentará seguir tus instrucciones de orden y rango, **basándose en el resumen histórico proporcionado**.
             """)
 
             latest_results = df.sort_values(by='Fecha', ascending=False).head(5)
             latest_results_str = latest_results.to_string(index=False)
 
+            # --- PREPARACIÓN DE DATOS HISTÓRICOS PARA EL PROMPT ---
+            all_balotas = pd.concat([df['Balota 1'], df['Balota 2'], df['Balota 3'], df['Balota 4'], df['Balota 5']])
+            top_10_balotas_global = all_balotas.value_counts().head(10)
+            top_balotas_str = ", ".join([f"{num} ({freq} veces)" for num, freq in top_10_balotas_global.items()])
+
+            top_10_superbalotas = df['SuperBalota'].value_counts().head(10)
+            top_superbalotas_str = ", ".join([f"{num} ({freq} veces)" for num, freq in top_10_superbalotas.items()])
+            # --- FIN DE PREPARACIÓN DE DATOS ---
+
+            # --- EL PROMPT CLAVE CON LA INFORMACIÓN HISTÓRICA ADICIONAL ---
             prompt = st.text_area(
                 "Ingresa tu pregunta o solicitud para Gemini sobre los datos del Baloto:",
-                f"Basado en los siguientes últimos resultados del Baloto:\n\n{latest_results_str}\n\n"
+                f"Basado en los siguientes últimos 5 resultados del Baloto:\n\n{latest_results_str}\n\n"
+                f"**Información Histórica Adicional:**\n"
+                f"- Los números de Balota regular más frecuentes históricamente (en cualquier posición, del 1 al 43) son: {top_balotas_str}.\n"
+                f"- Los números de SuperBalota más frecuentes históricamente (del 1 al 16) son: {top_superbalotas_str}.\n\n"
                 "Estoy buscando un posible conjunto de 5 números de balota y 1 SuperBalota. "
                 "Las 5 balotas deben estar en el rango de 1 a 43 y **estrictamente ordenadas de forma ascendente (Balota 1 < Balota 2 < Balota 3 < Balota 4 < Balota 5)**. "
                 "La SuperBalota debe estar en el rango de 1 a 16 y es independiente de las otras 5. "
-                "Por favor, sugiere un conjunto de números y justifica brevemente tu razonamiento, quizás basándote en tendencias o números frecuentes de los datos históricos. "
+                "Por favor, sugiere un conjunto de números y justifica brevemente tu razonamiento, basándote en los datos proporcionados (últimos resultados y números frecuentes históricos). "
                 "Formato de salida deseado: Balotas: [N1, N2, N3, N4, N5], SuperBalota: [SB]."
             )
+            # --- FIN DEL PROMPT CLAVE ---
 
             if st.button("Generar con Gemini"):
                 with st.spinner("Generando respuesta..."):
