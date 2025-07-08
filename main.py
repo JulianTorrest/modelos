@@ -950,7 +950,7 @@ if not df.empty:
         st.write("Aquí puedes explorar diferentes enfoques para generar posibles combinaciones de Baloto, incluyendo simulaciones y recomendaciones basadas en datos históricos. **Recuerda:** Los sorteos de lotería son aleatorios y estas herramientas son para fines de entretenimiento y análisis, no garantizan resultados.")
 
         if model:
-            num_sims = st.slider("Número de simulaciones para Montecarlo (y para la Simulación de Ganancias):", min_value=200000, max_value=10000000, value=200000, step=100000, key='num_sim_slider')
+            num_sims = st.slider("Número de simulaciones para Montecarlo (y para la Simulación de Ganancias):", min_value=200000, max_value=15000000, value=200000, step=100000, key='num_sim_slider')
             
             if st.button("Generar Todos los Pronósticos"):
                 st.session_state.all_forecasts = [] # Limpiar resultados anteriores
@@ -1077,7 +1077,7 @@ if not df.empty:
             num_smart_combos = st.slider(
                 "Número de combinaciones a generar por método para la Simulación Histórica 'Inteligente':",
                 min_value=100000, # Aumentado el mínimo
-                max_value=10_000_000, # Aumentado drásticamente el máximo (1 millón)
+                max_value=15_000_000, # Aumentado drásticamente el máximo (1 millón)
                 value=100000, # Valor predeterminado más alto para empezar a ver algo
                 step=100000,
                 key='num_smart_combos_slider_2' # Cambiado el key para evitar conflictos
