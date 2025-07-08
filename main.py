@@ -1076,10 +1076,10 @@ if not df.empty:
             
             num_smart_combos = st.slider(
                 "Número de combinaciones a generar por método para la Simulación Histórica 'Inteligente':",
-                min_value=10000, # Aumentado el mínimo
-                max_value=1_000_000, # Aumentado drásticamente el máximo (1 millón)
-                value=10000, # Valor predeterminado más alto para empezar a ver algo
-                step=10000,
+                min_value=100000, # Aumentado el mínimo
+                max_value=10_000_000, # Aumentado drásticamente el máximo (1 millón)
+                value=100000, # Valor predeterminado más alto para empezar a ver algo
+                step=100000,
                 key='num_smart_combos_slider_2' # Cambiado el key para evitar conflictos
             )
 
